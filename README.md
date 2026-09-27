@@ -111,3 +111,10 @@ plan. The existing scheduler remains the real-time admission authority.
 Infrastructure code extracted for portfolio use; API and configuration may
 change. This is not a finished financial product and carries no SLA. There is
 no execution/order functionality by design.
+
+## License
+
+The source in this repository is publicly readable but is **not** provided
+under an open-source license: no rights to reuse, modify, or redistribute are
+granted automatically. Third-party generated protocol bindings carry their own
+attribution — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
