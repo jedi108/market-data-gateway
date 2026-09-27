@@ -1,0 +1,113 @@
+# Market Data Gateway
+
+A Go market-data boundary service: a single caching, rate-limited access layer
+between trading/runtime clients and upstream candle providers. It exposes
+read-only candle APIs, makes no execution/order calls, and performs no provider
+call during tests or startup validation.
+
+## Features
+
+- **Client API**: `/v1/health`, `/v1/ready`, `/v1/candles`, `/v1/candles/batch`, Prometheus `/v1/metrics`.
+- **Fail-closed configuration**: strict YAML schema; the gateway refuses to start on unknown fields, missing values, or unsafe invariants.
+- **Bounded upstream budget**: per-provider safe/node budget guard with runtime enforcement before every upstream call.
+- **Cache + singleflight**: in-memory request coalescing and a persistent SQLite (pure-Go driver, CGO-free) replica cache with bounded retention.
+- **Deterministic cluster routing** (optional multi-node): weighted rendezvous ownership per canonical series, private peer API with node-to-node verification, quorum/fencing lease for automatic failover, cluster-wide budget guard.
+- **Providers**: TBank (generated gRPC bindings) and a deterministic fake provider for local development.
+
+## Requirements
+
+- Go 1.25+ (see `go.mod`), `CGO_ENABLED=0` supported and used in production builds.
+
+## Build and test
+
+```bash
+make build          # CGO_ENABLED=0 binary in build/gateway
+make test           # CGO_ENABLED=0 go test ./...
+make test-race      # CGO_ENABLED=1 go test -race ./...
+make vet
+make fmt-check
+make verify         # fmt-check + vet + test + local smoke
+```
+
+Generated TBank bindings are based on the pinned `RussianInvestments/invest-python` source revision `2a0074a` (Apache-2.0; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); only `common.proto`, `marketdata.proto`, and `field_behavior.proto` are checked in under `internal/provider/tbank/gen`. The bindings are generated with `protoc v5.29.3`, `protoc-gen-go v1.36.12`, and `protoc-gen-go-grpc v1.5.1`; provider protobuf imports are deliberately confined to `internal/provider/tbank`.
+
+## Quick start (fake provider, single node, loopback only)
+
+No token, no VPN, no root, no non-loopback interface required:
+
+```bash
+make smoke
+```
+
+This builds the binary, starts it with `-provider=fake` on `127.0.0.1:8088`
+using the committed local config [config/gateway.local.example.yaml](config/gateway.local.example.yaml),
+performs a synthetic candles request, checks the metrics endpoint, stops the
+process gracefully, and removes the temporary state file.
+
+Manual equivalent:
+
+```bash
+make build
+export GATEWAY_NODE_TOKEN=<any-non-empty-local-value>
+./build/gateway -config config/gateway.local.example.yaml -provider=fake
+curl -s http://127.0.0.1:8088/v1/health
+curl -s 'http://127.0.0.1:8088/v1/candles?venue=tbank&symbol=SBER&timeframe=1m&from_utc_ms=0&to_utc_ms=180000&limit=500&include_incomplete=false'
+```
+
+The real TBank provider requires `TBANK_MARKET_DATA_TOKEN` (or the configured
+`token_env`) plus an explicit `-tbank-endpoint`; it is never constructed
+implicitly. Secrets are read from the environment only and never appear in
+config files or logs.
+
+## Configuration
+
+`config/gateway.local.example.yaml` is a fully concrete single-node loopback
+config for local development. `config/gateway.example.yaml` is a
+non-deployable schema reference: every `REQUIRED_*` placeholder is fail-closed
+and the gateway refuses to start without reviewed concrete values.
+
+Peer-boundary invariant: multi-node membership, automatic failover, and
+witnesses require private non-loopback peer addresses (fail-closed). The only
+loopback exception is the single-node manual-mode local scenario above.
+
+## Cluster mode
+
+- `internal/routing`: weighted rendezvous ownership over canonical SeriesKey, salted by routing_version; deterministic primary/standby on all nodes; pinned golden vectors in `table_test.go`.
+- `internal/auth`: node-credential domain for the peer boundary (constant-time, fail-closed when unconfigured).
+- `internal/cluster`: membership view + one-hop peer client (typed `ROUTING_VERSION_MISMATCH`/`NOT_OWNER`/auth errors, bounded deadlines, response-owner verification) and the same-owner batch call `FetchCandlesBatch` (per-item typed errors).
+- `internal/peerapi`: private peer handler (`/internal/v1/candles`, `/internal/v1/candles/batch`, `/internal/v1/node`); auth → cluster → hop → version → owner enforcement (per item for batches); never proxies (loops impossible).
+- `internal/budget`: per-credential-group cluster budget guard. Every node derives it from the identical canonical config; `sum(node_hard_budgets_per_minute) <= safe_budget_per_minute` is enforced at config load (unsafe config refuses to start) and again at runtime before every upstream call. A provider-observed budget shrink below the configured sum latches upstream work closed until restart. Configured/observed/blocked state is exported as `gateway_cluster_budget_*` metrics.
+- Batch: `POST /v1/candles/batch` partitions items by deterministic owner, runs local items through the normal singleflight `Get`, and sends one bounded peer sub-batch per remote owner (`batch_fan_out` bounds parallelism). Per-item result/error/freshness is preserved; peer responses are committed as read-only replicas exactly like the single-request path; a failing owner group only marks its own items.
+- Failover: fencing-token lease per series key plus quorum confirmation; at most one upstream owner per series under crash, partition, or lease-store degradation — see [DOC/market_data_gateway_failover.md](DOC/market_data_gateway_failover.md).
+
+Cluster smoke targets (multi-node smokes bind peers to a discovered private
+IPv4 and clients to loopback): `make smoke-cluster2`, `make smoke-cluster3`,
+`make smoke-loglevel`, `make smoke-packaging`.
+
+## Storage and schema migrations
+
+The SQLite replica cache schema is owned by this repository:
+`internal/storage/migrations` holds the ordered, forward-only migration chain
+and a single `CurrentVersion`. On open, the gateway applies pending migrations
+transactionally, safely completes legacy databases, and refuses (fail-closed)
+any on-disk schema newer than the binary supports. There is no operational
+config knob for the schema version — pinning a gateway version pins its schema.
+
+## Capacity planning
+
+The optional `capacity_plan` switch is documented in [DOC/capacity_plan.md](DOC/capacity_plan.md).
+`off` preserves runtime behavior, `shadow` forecasts without side effects, and
+`enforce` fail-closes startup/readiness for an invalid or infeasible reviewed
+plan. The existing scheduler remains the real-time admission authority.
+
+## Design docs
+
+- [DOC/market_data_gateway_failover.md](DOC/market_data_gateway_failover.md) — automatic failover contract and fault tests.
+- [DOC/capacity_plan.md](DOC/capacity_plan.md) — capacity-plan switch semantics.
+- [DOC/adr/ADR-007-capacity-planning.md](DOC/adr/ADR-007-capacity-planning.md) — credential-group budget model.
+
+## Project status
+
+Infrastructure code extracted for portfolio use; API and configuration may
+change. This is not a finished financial product and carries no SLA. There is
+no execution/order functionality by design.

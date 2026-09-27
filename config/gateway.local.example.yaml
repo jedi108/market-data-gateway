@@ -1,0 +1,53 @@
+# Non-deployable LOCAL developer configuration (public fake-provider quick
+# start). Single node, manual failover, loopback-only: every address in this
+# file is 127.0.0.1 and it never points at real infrastructure. It runs the
+# gateway on one developer machine and must never be deployed to any server.
+cluster:
+  cluster_id: mdg-local
+  node_id: node-local
+  routing_version: 1
+  # The loopback peer boundary is allowed only for a single-node cluster
+  # with manual (or default) failover and no witnesses; any other topology
+  # requires private non-loopback peer addresses.
+  failover_mode: manual
+  nodes:
+    - id: node-local
+      weight: 1
+      peer_url: https://127.0.0.1:9443
+listeners:
+  client: 127.0.0.1:8088
+  peer: 127.0.0.1:9443
+auth:
+  # Shared node credential for the peer boundary; the secret itself lives
+  # only in the local environment, never in this file.
+  node_token_env: GATEWAY_NODE_TOKEN
+providers:
+  tbank:
+    credential_group: local-dev
+    token_env: TBANK_MARKET_DATA_TOKEN
+    safe_budget_per_minute: 600
+    node_hard_budget_per_minute: 500
+    # One entry per member; every node fails to start unless
+    # sum(node_hard_budgets_per_minute) <= safe_budget_per_minute.
+    node_hard_budgets_per_minute:
+      node-local: 500
+limits:
+  request_timeout_ms: 2000
+  max_request_limit: 500
+  # Client batch bounds: warmup batches of several symbols in one
+  # round-trip; fan-out bounds parallel items across the whole batch.
+  max_batch_items: 20
+  batch_fan_out: 4
+  cache_retention_ms: 3600000
+  storage_path: build/mdg-local.sqlite
+  queue_capacity: 64
+  worker_count: 4
+  max_retries: 2
+  retry_base_delay_ms: 250
+  per_client_quota_per_minute: 120
+  max_tracked_clients: 16
+  drain_timeout_ms: 5000
+
+# Startup-scoped forecast, explicitly off for the local quick start.
+capacity_plan:
+  mode: off # off | shadow | enforce

@@ -1,0 +1,64 @@
+# Non-deployable schema reference: populate only with reviewed evidence.
+# Every REQUIRED field is fail-closed: the gateway refuses to start without
+# a measured, reviewed value. No production defaults exist.
+cluster:
+  cluster_id: REQUIRED
+  node_id: ${GATEWAY_NODE_ID}
+  routing_version: REQUIRED
+  nodes:
+    - id: node-a
+      weight: REQUIRED_POSITIVE_WEIGHT
+      peer_url: https://REQUIRED_PRIVATE_IP:REQUIRED_PEER_PORT
+    - id: node-b
+      weight: REQUIRED_POSITIVE_WEIGHT
+      peer_url: https://REQUIRED_PRIVATE_IP:REQUIRED_PEER_PORT
+listeners:
+  client: 127.0.0.1:REQUIRED_CLIENT_PORT
+  peer: REQUIRED_PRIVATE_IP:REQUIRED_PEER_PORT
+auth:
+  # Shared node credential for the peer boundary; the secret itself lives
+  # only in the systemd EnvironmentFile, never in this file.
+  node_token_env: GATEWAY_NODE_TOKEN
+providers:
+  tbank:
+    credential_group: REQUIRED_NON_SECRET_ALIAS
+    token_env: TBANK_MARKET_DATA_TOKEN
+    safe_budget_per_minute: REQUIRED_MEASURED_SAFE_BUDGET
+    node_hard_budget_per_minute: REQUIRED_NODE_SHARE
+    # Cluster budget shares: one entry per member; every node carries
+    # the identical map and fails to start unless
+    # sum(node_hard_budgets_per_minute) <= safe_budget_per_minute.
+    node_hard_budgets_per_minute:
+      node-a: REQUIRED_NODE_SHARE
+      node-b: REQUIRED_NODE_SHARE
+limits:
+  request_timeout_ms: REQUIRED_MEASURED_TIMEOUT
+  max_request_limit: REQUIRED_PROVIDER_BOUND
+  # Client batch bounds: warmup batches of several symbols in one
+  # round-trip; fan-out bounds parallel items across the whole batch.
+  max_batch_items: REQUIRED_BATCH_BOUND
+  batch_fan_out: REQUIRED_FAN_OUT_BOUND
+  cache_retention_ms: REQUIRED_RETENTION
+  storage_path: REQUIRED_STATE_PATH
+  queue_capacity: REQUIRED_MEASURED_QUEUE_CAPACITY
+  worker_count: REQUIRED_MEASURED_WORKER_COUNT
+  max_retries: REQUIRED_MEASURED_MAX_RETRIES
+  retry_base_delay_ms: REQUIRED_MEASURED_RETRY_BASE_DELAY
+  per_client_quota_per_minute: REQUIRED_MEASURED_CLIENT_QUOTA
+  max_tracked_clients: REQUIRED_MEASURED_MAX_CLIENTS
+  drain_timeout_ms: REQUIRED_MEASURED_DRAIN_TIMEOUT
+
+# Optional startup-scoped forecast. It is not a second scheduler and contains
+# no symbols, credentials, URLs, or dynamic client input.
+capacity_plan:
+  mode: off # off | shadow | enforce
+  credential_group: REQUIRED_SAME_AS_PROVIDERS_TBANK
+  gateway_count: 1 # shared TBank group must remain one
+  target_utilization: 1.0
+  retry_factor: 1.10
+  workloads:
+    - timeframe: 15m # 1m, 5m, 15m, 30m, 1h, 1d
+      instruments: 40
+      requests_per_candle: 1
+      freshness_sla_ms: 30000
+      source: external # derived is shadow-only

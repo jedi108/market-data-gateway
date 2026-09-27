@@ -1,0 +1,16 @@
+# Build artifacts
+/build/
+/gateway
+
+# Local runtime state
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Local environment / credentials
+.env
+.env.*
+
+# OS noise
+.DS_Store
