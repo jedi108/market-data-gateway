@@ -134,14 +134,15 @@ func main() {
 	})
 	recorder := observability.NewRecorder()
 	// F20 instrument registry: startup resolves the served physical
-	// instruments either from the compiled-in reviewed share list or, when a
+	// instruments either from the compiled-in reviewed list or, when a
 	// registry file is configured, from the persisted snapshot of the last
 	// atomic refresh (restart recovery). Corrupt/foreign-schema files fail
 	// closed rather than starting with an unvalidated mapping.
-	tbankReg, err := openTBankRegistry(*tbankInstrumentsFile)
+	tbankPersisted, err := openTBankRegistry(*tbankInstrumentsFile)
 	if err != nil {
 		logFatal(err.Error())
 	}
+	tbankReg := tbankPersisted.Registry()
 	recorder.RecordRegistryState("tbank", tbankprovider.RegistrySchemaVersion, tbankReg.Refreshes(), registryInstrumentsForMetrics(tbankReg))
 	logger.Info("instrument registry active", "instruments", len(tbankReg.Instruments()), "refreshes", tbankReg.Refreshes(), "persisted", *tbankInstrumentsFile != "")
 	// F20 capability boundary: the gateway serves candles only; the explicit
@@ -272,6 +273,15 @@ func main() {
 	// and the cluster budget guard; the job stops at shutdown.
 	if cfg.Warmup.Enabled {
 		go runPrewarm(ctx, candleService, cfg, logger)
+	}
+	// F20 runtime registry refresh: with a configured registry file and a
+	// positive refresh interval, the gateway periodically re-reads the file
+	// and applies changed snapshots atomically (validate, persist, swap), so
+	// a futures contract can roll without a restart. Every applied refresh
+	// re-records the gateway_registry_* gauge set; a rejected candidate
+	// (corrupt/invalid file) keeps the currently served mapping.
+	if *tbankInstrumentsFile != "" && cfg.InstrumentRegistry.RefreshIntervalMS > 0 {
+		go runRegistryRefresher(ctx, tbankPersisted, recorder, time.Duration(cfg.InstrumentRegistry.RefreshIntervalMS)*time.Millisecond, logger)
 	}
 	// Phase 6 background lease renewer. When automatic failover is enabled, the
 	// node re-confirms each held lease on a strict-majority cadence well before
@@ -500,19 +510,54 @@ func defaultCryptoSemantics() map[string]cryptoprovider.CandleSemantics {
 }
 
 // openTBankRegistry builds the TBank instrument registry for startup. With no
-// configured file it is the compiled-in reviewed share list (the pre-futures
-// behavior). With a file it recovers the last persisted atomic refresh so the
-// identity mapping (including the active physical futures contract) survives
-// restarts.
-func openTBankRegistry(path string) (*tbankprovider.Registry, error) {
+// configured file it is the compiled-in reviewed list (the pre-futures
+// behavior), served without a persistent source: refresh is refused because
+// there is no validated file to reload. With a file it recovers the last
+// persisted atomic refresh so the identity mapping (including the active
+// physical futures contract) survives restarts.
+func openTBankRegistry(path string) (*tbankprovider.PersistedRegistry, error) {
 	if path == "" {
-		return tbankprovider.NewRegistry(tbankInstruments())
+		return tbankprovider.OpenVolatileRegistry(tbankInstruments())
 	}
-	persisted, err := tbankprovider.OpenPersistedRegistry(path, tbankInstruments())
-	if err != nil {
-		return nil, err
+	return tbankprovider.OpenPersistedRegistry(path, tbankInstruments())
+}
+
+// runRegistryRefresher is the runtime trigger of the F20 registry refresh. On
+// every tick it re-reads the configured instruments file and applies changed
+// snapshots atomically; a successful application re-records the registry
+// gauge set so gateway_registry_* always describe the served mapping. A
+// rejected candidate logs a warning and keeps the current mapping (fail
+// closed). It exits when ctx is cancelled at shutdown.
+func runRegistryRefresher(ctx context.Context, persisted *tbankprovider.PersistedRegistry, recorder *observability.Recorder, interval time.Duration, logger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	logger.Info("instrument registry refresher active", "interval", interval.String())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			applied, err := applyRegistryRefresh(persisted, recorder)
+			switch {
+			case err != nil:
+				logger.Warn("instrument registry refresh rejected; keeping current mapping", "reason", err.Error())
+			case applied:
+				logger.Info("instrument registry refreshed", "refreshes", persisted.Registry().Refreshes(), "instruments", len(persisted.Registry().Instruments()))
+			}
+		}
 	}
-	return persisted.Registry(), nil
+}
+
+// applyRegistryRefresh applies one reload tick: reload the file, and when a
+// changed snapshot was applied, re-record the registry metrics from the new
+// snapshot.
+func applyRegistryRefresh(persisted *tbankprovider.PersistedRegistry, recorder *observability.Recorder) (bool, error) {
+	applied, err := persisted.Reload()
+	if err != nil || !applied {
+		return false, err
+	}
+	recorder.RecordRegistryState("tbank", tbankprovider.RegistrySchemaVersion, persisted.Registry().Refreshes(), registryInstrumentsForMetrics(persisted.Registry()))
+	return true, nil
 }
 
 // registryInstrumentsForMetrics maps the registry snapshot onto the bounded

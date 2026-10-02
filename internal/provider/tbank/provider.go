@@ -30,11 +30,12 @@ type Provider struct{ client MarketDataClient }
 // identity difference lives entirely in the registry/series key (instrument
 // UID per expiry). No order/trading RPC is referenced anywhere in the gateway.
 //
-// TODO(F20 online DoD): verify against live TBank that (a) the physical GOLD
-// contract UID returns candles through instrument_id exactly as a FIGI does,
-// and (b) futures quotations are delivered in points with lot-denominated
-// volume as assumed by model.InstrumentMetadata defaults. Until then no real
-// futures instrument is added to the production registry.
+// F20 online DoD (2026-10-02, read-only live probe): verified that the
+// physical GOLD-12.26 contract (uid 91f84d07-14a1-43a6-a6b8-648b62a41994)
+// returns candles through instrument_id exactly as a FIGI does, and that
+// futures quotations arrive as points with integer lot-denominated volume —
+// the assumptions of model.InstrumentMetadata defaults hold. The verified
+// contract is registered in cmd/gateway/instruments_tbank.go.
 
 func New(client MarketDataClient) *Provider { return &Provider{client: client} }
 

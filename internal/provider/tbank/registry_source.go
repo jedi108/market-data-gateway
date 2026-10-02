@@ -32,7 +32,8 @@ type persistedRegistry struct {
 
 // PersistedRegistry couples the in-memory registry with its persistent source.
 // Refresh validates and persists before swapping, so the file on disk always
-// holds a snapshot this binary can reload after a restart.
+// holds a snapshot this binary can reload after a restart. A volatile registry
+// (no file path) serves the compiled-in mapping and refuses refreshes.
 type PersistedRegistry struct {
 	registry *Registry
 	path     string
@@ -58,6 +59,18 @@ func OpenPersistedRegistry(path string, fallback []Instrument) (*PersistedRegist
 	return &PersistedRegistry{registry: registry, path: path}, nil
 }
 
+// OpenVolatileRegistry serves the compiled-in fallback list without a
+// persistent source. Refresh is refused: without a file there is no validated
+// source to apply and no recovery snapshot to persist, so a runtime refresh
+// would silently diverge from the reviewed startup mapping.
+func OpenVolatileRegistry(fallback []Instrument) (*PersistedRegistry, error) {
+	registry, err := NewRegistry(fallback)
+	if err != nil {
+		return nil, err
+	}
+	return &PersistedRegistry{registry: registry}, nil
+}
+
 // Registry exposes the live mapping for resolution, descriptors, and metrics.
 func (p *PersistedRegistry) Registry() *Registry { return p.registry }
 
@@ -66,6 +79,9 @@ func (p *PersistedRegistry) Registry() *Registry { return p.registry }
 // leaves the previously served mapping and the previously persisted file
 // intact — a target switch is either fully applied or not applied at all.
 func (p *PersistedRegistry) Refresh(instruments []Instrument) error {
+	if p.path == "" {
+		return fmt.Errorf("refresh requires a configured instrument registry file")
+	}
 	// Step 1: full validation without side effects.
 	candidate, err := buildSnapshot(instruments)
 	if err != nil {
@@ -77,6 +93,81 @@ func (p *PersistedRegistry) Refresh(instruments []Instrument) error {
 	}
 	// Step 3: atomic in-memory swap.
 	return p.registry.Refresh(instruments)
+}
+
+// Reload is the runtime refresh trigger: it re-reads the configured registry
+// file and applies it when it holds a changed, valid snapshot (validate,
+// persist, swap — the Refresh steps, so the file is rewritten in its
+// normalized form). A corrupt or invalid file is an error that leaves the
+// current mapping and the current file untouched; a missing file is a no-op
+// (the file seeds at startup, it never silently rolls back at runtime). The
+// bool reports whether a changed snapshot was applied.
+func (p *PersistedRegistry) Reload() (bool, error) {
+	if p.path == "" {
+		return false, fmt.Errorf("refresh requires a configured instrument registry file")
+	}
+	instruments, existed, err := loadInstrumentsFile(p.path)
+	if err != nil {
+		return false, err
+	}
+	if !existed {
+		return false, nil
+	}
+	changed, err := p.changed(instruments)
+	if err != nil || !changed {
+		return false, err
+	}
+	if err := p.Refresh(instruments); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// changed reports whether the candidate list differs from the served snapshot.
+// Both sides are fully validated/normalized first, so cosmetic differences
+// (field order, case, alias whitespace) never trigger a rewrite.
+func (p *PersistedRegistry) changed(candidate []Instrument) (bool, error) {
+	if _, err := buildSnapshot(candidate); err != nil {
+		return false, err
+	}
+	current := p.registry.Instruments()
+	if len(current) != len(candidate) {
+		return true, nil
+	}
+	currentByID := make(map[string]Instrument, len(current))
+	for _, instrument := range current {
+		currentByID[instrument.ProviderInstrumentID] = instrument
+	}
+	for _, instrument := range candidate {
+		normalized, err := normalizeInstrument(instrument)
+		if err != nil {
+			return false, err
+		}
+		served, ok := currentByID[normalized.ProviderInstrumentID]
+		if !ok || !equalInstruments(served, normalized) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// equalInstruments compares two normalized instruments field by field
+// (Aliases included; both sides are normalized so the alias slices are
+// trimmed in the same order).
+func equalInstruments(a, b Instrument) bool {
+	if a.CanonicalSymbol != b.CanonicalSymbol || a.ProviderInstrumentID != b.ProviderInstrumentID ||
+		a.MarketType != b.MarketType || a.InstrumentType != b.InstrumentType ||
+		a.ProviderIDKind != b.ProviderIDKind || a.PriceUnit != b.PriceUnit ||
+		a.VolumeUnit != b.VolumeUnit || a.Currency != b.Currency || a.ExpirationUTCMS != b.ExpirationUTCMS ||
+		len(a.Aliases) != len(b.Aliases) {
+		return false
+	}
+	for i := range a.Aliases {
+		if a.Aliases[i] != b.Aliases[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func loadInstrumentsFile(path string) ([]Instrument, bool, error) {

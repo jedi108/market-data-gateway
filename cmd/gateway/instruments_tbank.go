@@ -1,27 +1,49 @@
 package main
 
 import (
+	"github.com/jedi108/market-data-gateway/internal/model"
 	tbankprovider "github.com/jedi108/market-data-gateway/internal/provider/tbank"
 )
 
-// tbankInstruments returns the canonical TBank shares registry served by the
-// gateway. FIGIs were read from the live TBank InstrumentsService (read-only
-// probe) and represent a fixed, reviewed universe of liquid shares. AFR is not
-// registered: TBank does not list it at all, and requests resolve as unknown
-// symbol.
+// tbankInstruments returns the canonical TBank instrument registry served by
+// the gateway. Share FIGIs were read from the live TBank InstrumentsService
+// (read-only probe) and represent a fixed, reviewed universe of liquid shares.
+// AFR is not registered: TBank does not list it at all, and requests resolve
+// as unknown symbol.
 //
-// F20: physical futures instruments are NOT listed here. A real futures UID
-// (for example a physical GOLD contract) can only come from a reviewed online
-// verification against live TBank — none exists offline — so the production
-// list stays shares-only, and synthetic futures instruments live only in
-// tests. Serving futures additionally requires the persisted/refreshable
-// registry path (-tbank-instruments-file) because contracts roll.
+// F20 DoD (2026-10-02 reviewed online verification against live TBank,
+// read-only InstrumentsService + GetCandles probe): the active physical
+// USD-gold contract of the MOEX GOLD family was verified to serve candles
+// through GetCandlesRequest.instrument_id by its instrument_uid, with prices
+// in points and integer lot-denominated volume. That single reviewed contract
+// is registered below with the logical rolling alias "GOLD"; no synthetic
+// fixture may enter this list (guard test). When the contract rolls, the next
+// family member is added only through the same reviewed verification (or the
+// runtime registry refresh driven by -tbank-instruments-file), never by
+// aliasing an assumed contract.
 //
 // Every canonical symbol additionally accepts its "SYM/RUB" pair spelling.
 // VTBR also accepts the pre-rename "VTB"/"VTB/RUB" spellings for
 // compatibility.
 func tbankInstruments() []tbankprovider.Instrument {
 	instruments := []tbankprovider.Instrument{
+		{
+			// Physical GOLD-12.26 (provider ticker GDZ6, figi FUTGOLD12260,
+			// class code SPBFUT): uid verified live on 2026-10-02. The
+			// logical "GOLD" alias targets exactly this active contract;
+			// "GDZ6" is the provider ticker spelling. Futures price domain
+			// is points, candle volume is lots (contracts); the settlement
+			// currency is deliberately not exposed (see model.InstrumentMetadata).
+			CanonicalSymbol:      "GOLD-12.26",
+			ProviderInstrumentID: "91f84d07-14a1-43a6-a6b8-648b62a41994",
+			MarketType:           "futures",
+			Aliases:              []string{"GOLD", "GDZ6"},
+			InstrumentType:       model.InstrumentTypeFuture,
+			ProviderIDKind:       model.ProviderIDKindInstrumentUID,
+			PriceUnit:            model.PriceUnitPoints,
+			VolumeUnit:           model.VolumeUnitLots,
+			ExpirationUTCMS:      1797811200000, // 2026-12-21T00:00:00Z, provider expiration_date
+		},
 		{CanonicalSymbol: "SBER", ProviderInstrumentID: "BBG004730N88", MarketType: "shares", Aliases: []string{"SBER/RUB"}},
 		{CanonicalSymbol: "GAZP", ProviderInstrumentID: "BBG004730RP0", MarketType: "shares", Aliases: []string{"GAZP/RUB"}},
 		{CanonicalSymbol: "LKOH", ProviderInstrumentID: "BBG004731032", MarketType: "shares", Aliases: []string{"LKOH/RUB"}},

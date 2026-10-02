@@ -48,6 +48,14 @@ limits:
   max_tracked_clients: REQUIRED_MEASURED_MAX_CLIENTS
   drain_timeout_ms: REQUIRED_MEASURED_DRAIN_TIMEOUT
 
+# Optional runtime refresh of the TBank instrument registry (F20): only
+# effective together with -tbank-instruments-file. 0 (the default) keeps the
+# startup-only mapping; a reviewed positive interval re-reads the file and
+# applies changed snapshots atomically (futures contract rolls without
+# restart).
+instrument_registry:
+  refresh_interval_ms: 0
+
 # Optional startup-scoped forecast. It is not a second scheduler and contains
 # no symbols, credentials, URLs, or dynamic client input.
 capacity_plan:

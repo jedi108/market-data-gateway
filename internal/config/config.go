@@ -15,14 +15,15 @@ import (
 )
 
 type Config struct {
-	Cluster      Cluster      `yaml:"cluster"`
-	Listeners    Listeners    `yaml:"listeners"`
-	Auth         Auth         `yaml:"auth"`
-	Providers    Providers    `yaml:"providers"`
-	Limits       Limits       `yaml:"limits"`
-	Warmup       Warmup       `yaml:"warmup,omitempty"`
-	CapacityPlan CapacityPlan `yaml:"capacity_plan,omitempty"`
-	RoutingHash  string
+	Cluster            Cluster            `yaml:"cluster"`
+	Listeners          Listeners          `yaml:"listeners"`
+	Auth               Auth               `yaml:"auth"`
+	Providers          Providers          `yaml:"providers"`
+	Limits             Limits             `yaml:"limits"`
+	Warmup             Warmup             `yaml:"warmup,omitempty"`
+	InstrumentRegistry InstrumentRegistry `yaml:"instrument_registry,omitempty"`
+	CapacityPlan       CapacityPlan       `yaml:"capacity_plan,omitempty"`
+	RoutingHash        string
 }
 type Cluster struct {
 	ClusterID      string `yaml:"cluster_id"`
@@ -124,6 +125,17 @@ type Limits struct {
 	// 2). Beyond the bound, identical re-polls are served from cache with
 	// honest stale semantics until the next epoch.
 	MaxRefreshAttemptsPerEpoch int `yaml:"max_refresh_attempts_per_epoch,omitempty"`
+}
+
+// InstrumentRegistry configures the runtime refresh of the TBank instrument
+// mapping (F20). It only matters together with -tbank-instruments-file: the
+// gateway periodically re-reads that file and applies changed snapshots
+// atomically (validate, persist, swap, re-record registry metrics), so a
+// futures contract can roll without a restart.
+type InstrumentRegistry struct {
+	// RefreshIntervalMS is the reload cadence; 0 (the default) disables the
+	// runtime refresh and keeps the startup-only behavior.
+	RefreshIntervalMS int `yaml:"refresh_interval_ms,omitempty"`
 }
 
 // Warmup configures the controlled prewarm job (task 109): after start the
@@ -303,6 +315,9 @@ func (c Config) Validate() error {
 	}
 	if c.Limits.PublicationGraceMS < 0 || c.Limits.MaxRefreshAttemptsPerEpoch < 0 {
 		return fmt.Errorf("publication_grace_ms and max_refresh_attempts_per_epoch must be non-negative")
+	}
+	if c.InstrumentRegistry.RefreshIntervalMS < 0 {
+		return fmt.Errorf("instrument_registry.refresh_interval_ms must be non-negative")
 	}
 	return nil
 }

@@ -142,10 +142,22 @@ Registry refresh and restart recovery (`-tbank-instruments-file`): the
 instrument mapping can be replaced atomically (validate the full candidate
 snapshot, persist it with a temp-file rename, then swap the in-memory mapping
 under lock); on restart the persisted file is recovered (missing file falls
-back to the compiled-in reviewed share list; corrupt or foreign-schema files
-fail closed). Until reviewed online verification provides real futures UIDs,
-the production list stays shares-only — synthetic futures instruments exist
-only in tests.
+back to the compiled-in reviewed list; corrupt or foreign-schema files fail
+closed).
+
+With the same file configured plus a positive
+`instrument_registry.refresh_interval_ms`, a background refresher re-reads the
+file on that cadence and applies changed snapshots at runtime — no restart
+needed for a futures roll. A corrupt or invalid candidate is rejected with a
+warning and the currently served mapping stays untouched; a missing file is a
+no-op (the file never silently rolls the mapping back); every applied refresh
+is durably persisted (normalized temp-file rename), increments
+`gateway_registry_refreshes_total`, and re-records the registry gauge set.
+Without a registry file the compiled-in list is served and refresh is refused.
+The compiled-in production list carries the reviewed physical GOLD-12.26
+contract (verified against live TBank by the read-only F20 online DoD: candles
+via `instrument_id` UID, prices in points, integer lot volume); synthetic
+futures instruments exist only in tests (guard-pinned).
 
 F20 metrics: `gateway_registry_instruments` and
 `gateway_registry_active_contract_expiry_epoch_seconds` (active physical
