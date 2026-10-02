@@ -18,6 +18,14 @@ import (
 
 type Resolver func(venue, symbol, timeframe string) (model.SeriesKey, error)
 
+// SeriesDescriptor maps a resolved series identity to its physical-instrument
+// metadata (F20 futures support). It is keyed by the provider instrument UID —
+// the same identity storage keys candles by — never by the logical alias, so
+// the metadata cannot disagree with the stored series. The bool reports
+// whether the physical instrument is known; unknown keys omit metadata rather
+// than invent it.
+type SeriesDescriptor func(key model.SeriesKey) (model.InstrumentMetadata, bool)
+
 // IdentityResolver maps a request to its logical client identity and fixed
 // scheduler priority (task 109). It returns a typed error for rejected
 // credentials; the rejection happens before admission.
@@ -32,6 +40,14 @@ func WithIdentityResolver(fn IdentityResolver) HandlerOption {
 	return func(h *GatewayHandler) { h.identity = IdentityResolver(fn) }
 }
 
+// WithSeriesDescriptors installs the physical-instrument metadata lookup so
+// responses carry explicit identity/units (instrument type, price domain,
+// volume unit, futures expiration). When unset, responses keep the legacy
+// shape with the field omitted (share back-compat).
+func WithSeriesDescriptors(fn SeriesDescriptor) HandlerOption {
+	return func(h *GatewayHandler) { h.describe = SeriesDescriptor(fn) }
+}
+
 type GatewayHandler struct {
 	*HealthHandler
 	service       *service.Service
@@ -42,6 +58,7 @@ type GatewayHandler struct {
 	logger        *slog.Logger
 	metrics       *gatewayMetrics
 	identity      IdentityResolver
+	describe      SeriesDescriptor
 }
 
 func NewGatewayHandler(build string, ready func() bool, candles *service.Service, resolve Resolver, maxLimit int) (*GatewayHandler, error) {
@@ -175,13 +192,14 @@ func (h *GatewayHandler) candlesBatch(w http.ResponseWriter, r *http.Request) {
 	results := h.service.GetBatch(r.Context(), clientID, priority, requests, service.BatchOptions{MaxFanOut: h.batchFanOut})
 	envelope := batchEnvelope{SchemaVersion: 1, Items: make([]batchItemEnvelope, 0, len(results))}
 	for _, result := range results {
-		item := batchItemEnvelope{Series: result.Series, CacheStatus: result.Result.CacheStatus, Freshness: result.Result.Freshness, SourceFetchedAtUTCMS: result.Result.SourceFetchedAtUTCMS, Replica: result.Result.Replica, ProviderStatus: result.Result.ProviderStatus, StaleCause: errorCode(result.Result.StaleCause)}
+		item := batchItemEnvelope{Series: result.Series, CacheStatus: result.Result.CacheStatus, Freshness: result.Result.Freshness, SourceFetchedAtUTCMS: result.Result.SourceFetchedAtUTCMS, Replica: result.Result.Replica, ProviderStatus: result.Result.ProviderStatus, StaleCause: errorCode(result.Result.StaleCause), Instrument: h.instrumentMetadata(result.Series)}
 		if result.Error != nil {
 			item.Error = errorCode(result.Error)
 			item.Message = errorMessage(result.Error)
 			item.Candles = nil
 		} else {
 			item.Candles = result.Result.Candles
+			h.recordSeriesObservability(result.Series, result.Result)
 		}
 		envelope.Items = append(envelope.Items, item)
 		if result.Error == nil {
@@ -244,10 +262,40 @@ func (h *GatewayHandler) candles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.metrics.recordResult(request.Series.Venue, request.Series.Timeframe, string(result.CacheStatus), string(result.Freshness))
+	h.recordSeriesObservability(request.Series, result)
 	if result.CacheStatus != service.CacheMemoryHit && result.CacheStatus != service.CachePersistentHit {
 		h.logger.Debug("gateway candle decision", "venue", request.Series.Venue, "timeframe", request.Series.Timeframe, "cache_status", result.CacheStatus, "freshness", result.Freshness)
 	}
-	write(w, http.StatusOK, candleEnvelope{SchemaVersion: 1, Series: request.Series, Candles: result.Candles, CacheStatus: result.CacheStatus, Freshness: result.Freshness, SourceFetchedAtUTCMS: result.SourceFetchedAtUTCMS, Replica: result.Replica, ProviderStatus: result.ProviderStatus, StaleCause: errorCode(result.StaleCause)})
+	write(w, http.StatusOK, candleEnvelope{SchemaVersion: 1, Series: request.Series, Candles: result.Candles, CacheStatus: result.CacheStatus, Freshness: result.Freshness, SourceFetchedAtUTCMS: result.SourceFetchedAtUTCMS, Replica: result.Replica, ProviderStatus: result.ProviderStatus, StaleCause: errorCode(result.StaleCause), Instrument: h.instrumentMetadata(request.Series)})
+}
+
+// instrumentMetadata resolves the physical-instrument metadata of a served
+// series, or nil when no descriptor is installed / the physical instrument is
+// unknown. Nil keeps the field omitted from the JSON response.
+func (h *GatewayHandler) instrumentMetadata(key model.SeriesKey) *model.InstrumentMetadata {
+	if h.describe == nil {
+		return nil
+	}
+	if metadata, ok := h.describe(key); ok {
+		return &metadata
+	}
+	return nil
+}
+
+// recordSeriesObservability feeds the F20 recorder families from a served
+// result: the cache source split by market type and the fetch-provenance age
+// of the served snapshot. It is a no-op without a configured recorder.
+func (h *GatewayHandler) recordSeriesObservability(key model.SeriesKey, result service.Result) {
+	recorder := h.service.Recorder()
+	if recorder == nil {
+		return
+	}
+	recorder.RecordSeriesSource(key.Venue, key.MarketType, string(result.CacheStatus))
+	if result.SourceFetchedAtUTCMS > 0 {
+		if age := time.Now().UnixMilli() - result.SourceFetchedAtUTCMS; age >= 0 {
+			recorder.RecordSourceAge(key.Venue, key.Timeframe, float64(age)/1000)
+		}
+	}
 }
 
 func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
@@ -334,6 +382,10 @@ type candleEnvelope struct {
 	Replica              bool                `json:"replica"`
 	ProviderStatus       string              `json:"provider_status"`
 	StaleCause           string              `json:"stale_cause,omitempty"`
+	// Instrument is the physical-instrument identity/units metadata (F20). It
+	// is omitted when no descriptor is installed, keeping the legacy share
+	// response shape byte-compatible.
+	Instrument *model.InstrumentMetadata `json:"instrument,omitempty"`
 }
 
 // batchEnvelope is the always-200 client batch envelope: per-item
@@ -355,6 +407,9 @@ type batchItemEnvelope struct {
 	StaleCause           string              `json:"stale_cause,omitempty"`
 	Error                string              `json:"error,omitempty"`
 	Message              string              `json:"message,omitempty"`
+	// Instrument carries the same physical-identity/units metadata as the
+	// single-request envelope, per item (F20).
+	Instrument *model.InstrumentMetadata `json:"instrument,omitempty"`
 }
 type errorEnvelope struct {
 	Error     string `json:"error"`

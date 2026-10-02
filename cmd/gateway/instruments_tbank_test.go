@@ -47,3 +47,21 @@ func TestTbankInstrumentsCoverReviewedWhitelist(t *testing.T) {
 		}
 	}
 }
+
+// TestTbankInstrumentsProductionListStaysSharesOnly guards the F20 offline
+// scope: no physical futures instrument (and no real GOLD contract) enters the
+// production registry before the reviewed online verification provides real
+// instrument UIDs. Synthetic futures instruments live only in tests.
+func TestTbankInstrumentsProductionListStaysSharesOnly(t *testing.T) {
+	for _, instrument := range tbankInstruments() {
+		if instrument.MarketType != "shares" {
+			t.Fatalf("production instrument %q has market type %q; futures require reviewed online UIDs first", instrument.CanonicalSymbol, instrument.MarketType)
+		}
+		if instrument.InstrumentType != "" && instrument.InstrumentType != "share" {
+			t.Fatalf("production instrument %q declares type %q", instrument.CanonicalSymbol, instrument.InstrumentType)
+		}
+		if instrument.ExpirationUTCMS != 0 {
+			t.Fatalf("production instrument %q carries an expiration", instrument.CanonicalSymbol)
+		}
+	}
+}

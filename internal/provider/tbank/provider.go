@@ -23,6 +23,19 @@ type MarketDataClient interface {
 }
 type Provider struct{ client MarketDataClient }
 
+// F20 futures note: the generated stubs require no per-asset-class widening.
+// GetCandlesRequest.instrument_id accepts either a share FIGI or a physical
+// futures contract instrument_uid, so physical futures candles use the same
+// MarketDataService.GetCandles RPC and the same FetchCandles path below — the
+// identity difference lives entirely in the registry/series key (instrument
+// UID per expiry). No order/trading RPC is referenced anywhere in the gateway.
+//
+// TODO(F20 online DoD): verify against live TBank that (a) the physical GOLD
+// contract UID returns candles through instrument_id exactly as a FIGI does,
+// and (b) futures quotations are delivered in points with lot-denominated
+// volume as assumed by model.InstrumentMetadata defaults. Until then no real
+// futures instrument is added to the production registry.
+
 func New(client MarketDataClient) *Provider { return &Provider{client: client} }
 
 // FetchCandlesWithHeaders performs the same call as FetchCandles and also

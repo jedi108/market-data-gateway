@@ -272,3 +272,80 @@ func TestStaleIfUpstreamErrorRequiresErrorAndAgePolicy(t *testing.T) {
 		t.Fatalf("expired stale fallback: allowed=%t err=%v", allowed, err)
 	}
 }
+
+// futuresKey is a physical futures series key: the logical "GOLD" alias never
+// appears here — identity is the per-expiry provider instrument UID.
+func futuresKey(uid string) model.SeriesKey {
+	return model.SeriesKey{Venue: "tbank", MarketType: "futures", ProviderInstrumentID: uid, Timeframe: "1h", CandleType: "trade"}
+}
+
+// TestFuturesExpiriesAreDistinctCacheEntries proves the F20 identity contract
+// at the durable layer: two expiries of one logical future are two series, and
+// writing the new contract never touches the old contract's history.
+func TestFuturesExpiriesAreDistinctCacheEntries(t *testing.T) {
+	store, err := Open(t.TempDir() + "/futures.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	december, march := futuresKey("synthetic-uid-gold-2612"), futuresKey("synthetic-uid-gold-2703")
+	if december.Identity() == march.Identity() {
+		t.Fatal("different expiries must produce different series identities")
+	}
+	if err := store.Save(december, Snapshot{Candles: []model.Candle{testCandle(0, true), testCandle(60, true)}, Metadata: Metadata{SourceFetchedAtUTCMS: 100, Coverage: []Interval{{FromUTCMS: 0, ToUTCMS: 120}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(march, Snapshot{Candles: []model.Candle{testCandle(0, true)}, Metadata: Metadata{SourceFetchedAtUTCMS: 200, Coverage: []Interval{{FromUTCMS: 0, ToUTCMS: 60}}}}); err != nil {
+		t.Fatal(err)
+	}
+	var seriesCount int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM series WHERE market_type = 'futures'").Scan(&seriesCount); err != nil {
+		t.Fatal(err)
+	}
+	if seriesCount != 2 {
+		t.Fatalf("futures series rows=%d want 2", seriesCount)
+	}
+	// Target switch simulation: a later refresh writing only the new active
+	// contract must leave the old contract's rows byte-identical.
+	if err := store.Save(march, Snapshot{Candles: []model.Candle{testCandle(60, true), testCandle(120, true)}, Metadata: Metadata{SourceFetchedAtUTCMS: 300, Coverage: []Interval{{FromUTCMS: 60, ToUTCMS: 180}}}}); err != nil {
+		t.Fatal(err)
+	}
+	old, found, err := store.Get(december, 0, 120)
+	if err != nil || !found {
+		t.Fatalf("old contract history: found=%t err=%v", found, err)
+	}
+	if len(old.Candles) != 2 || old.Metadata.SourceFetchedAtUTCMS != 100 {
+		t.Fatalf("old contract history was rewritten: %+v", old)
+	}
+	updated, found, err := store.Get(march, 0, 180)
+	if err != nil || !found || len(updated.Candles) != 3 {
+		t.Fatalf("new contract merge: candles=%d found=%t err=%v", len(updated.Candles), found, err)
+	}
+}
+
+// TestFuturesSeriesSurviveRegistryTargetSwitch proves the restart contract:
+// after a registry roll (old UID no longer targeted by the logical alias) the
+// previously persisted old-contract series still loads by its physical UID.
+func TestFuturesSeriesSurviveRegistryTargetSwitch(t *testing.T) {
+	path := t.TempDir() + "/roll.sqlite"
+	december := futuresKey("synthetic-uid-gold-2612")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(december, Snapshot{Candles: []model.Candle{testCandle(0, true)}, Metadata: Metadata{SourceFetchedAtUTCMS: 100, Coverage: []Interval{{FromUTCMS: 0, ToUTCMS: 60}}}}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	// "Restart": reopen the same database; the series is keyed by the physical
+	// UID, so it loads regardless of which contract a logical alias points at.
+	restarted, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	got, found, err := restarted.Get(december, 0, 60)
+	if err != nil || !found || len(got.Candles) != 1 {
+		t.Fatalf("old contract series after restart: found=%t err=%v", found, err)
+	}
+}

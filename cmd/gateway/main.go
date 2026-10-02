@@ -44,6 +44,7 @@ func main() {
 	providerMode := flag.String("provider", "", "upstream provider: fake (local verification only); empty or tbank requires explicit authorization")
 	cryptoMode := flag.String("crypto-mode", "", "crypto upstream provider: fake (local verification only); empty disables crypto venues; real mode requires explicit endpoint per venue")
 	tbankEndpoint := flag.String("tbank-endpoint", "", "explicit TBank host:port for the real provider transport (required for real traffic; never implicit)")
+	tbankInstrumentsFile := flag.String("tbank-instruments-file", "", "optional JSON path for the TBank instrument registry: recovered at startup (restart recovery of the last atomic refresh); the refresh API persists updates there")
 	logLevel := flag.String("log-level", "INFO", "minimum log level: DEBUG, INFO, WARN, ERROR")
 	flag.Parse()
 	if !*cleanupOnce && *tbankEndpoint == "" {
@@ -132,6 +133,20 @@ func main() {
 		IsRetryable:             isRetryableUpstream,
 	})
 	recorder := observability.NewRecorder()
+	// F20 instrument registry: startup resolves the served physical
+	// instruments either from the compiled-in reviewed share list or, when a
+	// registry file is configured, from the persisted snapshot of the last
+	// atomic refresh (restart recovery). Corrupt/foreign-schema files fail
+	// closed rather than starting with an unvalidated mapping.
+	tbankReg, err := openTBankRegistry(*tbankInstrumentsFile)
+	if err != nil {
+		logFatal(err.Error())
+	}
+	recorder.RecordRegistryState("tbank", tbankprovider.RegistrySchemaVersion, tbankReg.Refreshes(), registryInstrumentsForMetrics(tbankReg))
+	logger.Info("instrument registry active", "instruments", len(tbankReg.Instruments()), "refreshes", tbankReg.Refreshes(), "persisted", *tbankInstrumentsFile != "")
+	// F20 capability boundary: the gateway serves candles only; the explicit
+	// statement is logged at startup and enforced by typed errors.
+	logger.Info("gateway capability boundary", "served", strings.Join(tbankprovider.SupportedCapabilities(), ","), "direct_tbank", "orderbook,streams,prices,instruments,orders")
 	capacityResult := "valid"
 	if capacityPlan.Err != nil {
 		capacityResult = "invalid"
@@ -226,12 +241,12 @@ func main() {
 	if err != nil {
 		logFatal(err.Error())
 	}
-	handlerOpts := []httpapi.HandlerOption{}
+	handlerOpts := []httpapi.HandlerOption{httpapi.WithSeriesDescriptors(tbankReg.Describe)}
 	if clientDirectory.Enabled() {
 		logger.Info("client identity allowlist active", "identities", len(cfg.Auth.Clients))
 		handlerOpts = append(handlerOpts, httpapi.WithIdentityResolver(clientDirectory.Resolve))
 	}
-	handler, err := httpapi.NewGatewayHandlerWithIdentity(build, ready, candleService, resolver(), cfg.Limits.MaxRequestLimit, cfg.Limits.MaxBatchItems, cfg.Limits.BatchFanOut, handlerOpts...)
+	handler, err := httpapi.NewGatewayHandlerWithIdentity(build, ready, candleService, resolver(tbankReg), cfg.Limits.MaxRequestLimit, cfg.Limits.MaxBatchItems, cfg.Limits.BatchFanOut, handlerOpts...)
 	if err != nil {
 		logFatal(err.Error())
 	}
@@ -484,14 +499,40 @@ func defaultCryptoSemantics() map[string]cryptoprovider.CandleSemantics {
 	}
 }
 
-// resolver maps the client-facing venue/symbol/timeframe triple to the
-// canonical SeriesKey. Phase 1 wires the canonical TBank sandbox registry;
-// Additionally accepts binance/bybit via the crypto registry.
-func resolver() httpapi.Resolver {
-	tbankReg, err := tbankprovider.NewRegistry(tbankInstruments())
-	if err != nil {
-		logFatal("instrument registry: " + err.Error())
+// openTBankRegistry builds the TBank instrument registry for startup. With no
+// configured file it is the compiled-in reviewed share list (the pre-futures
+// behavior). With a file it recovers the last persisted atomic refresh so the
+// identity mapping (including the active physical futures contract) survives
+// restarts.
+func openTBankRegistry(path string) (*tbankprovider.Registry, error) {
+	if path == "" {
+		return tbankprovider.NewRegistry(tbankInstruments())
 	}
+	persisted, err := tbankprovider.OpenPersistedRegistry(path, tbankInstruments())
+	if err != nil {
+		return nil, err
+	}
+	return persisted.Registry(), nil
+}
+
+// registryInstrumentsForMetrics maps the registry snapshot onto the bounded
+// observability input shape (provider package stays decoupled from the
+// metrics package).
+func registryInstrumentsForMetrics(registry *tbankprovider.Registry) []observability.RegistryInstrument {
+	instruments := registry.Instruments()
+	out := make([]observability.RegistryInstrument, 0, len(instruments))
+	for _, instrument := range instruments {
+		out = append(out, observability.RegistryInstrument{MarketType: instrument.MarketType, InstrumentType: instrument.InstrumentType, Symbol: instrument.CanonicalSymbol, ExpirationUTCMS: instrument.ExpirationUTCMS})
+	}
+	return out
+}
+
+// resolver maps the client-facing venue/symbol/timeframe triple to the
+// canonical SeriesKey. The registry resolves the logical alias to exactly one
+// physical provider instrument (FIGI for shares, instrument_uid for futures);
+// the physical id becomes the stored series identity. Additionally accepts
+// binance/bybit via the crypto registry.
+func resolver(tbankReg *tbankprovider.Registry) httpapi.Resolver {
 	cryptoReg, err := cryptoprovider.NewRegistry(defaultCryptoInstruments(), defaultCryptoSemantics())
 	if err != nil {
 		logFatal("crypto instrument registry: " + err.Error())

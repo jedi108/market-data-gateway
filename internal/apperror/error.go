@@ -17,6 +17,12 @@ const (
 	// a partial response as a successful candle window.
 	CodeIncompleteCoverage  Code = "INCOMPLETE_COVERAGE"
 	CodeNodeUnauthenticated Code = "NODE_UNAUTHENTICATED"
+	// CodeUnsupportedCapability rejects a request outside the gateway's fixed
+	// capability boundary (F20): the TBank boundary is candles-only, so any
+	// input the gateway does not serve (orderbooks, streams, trading RPCs)
+	// must fail with this explicit error — never an empty response and never a
+	// silent fallback to another source.
+	CodeUnsupportedCapability Code = "UNSUPPORTED_CAPABILITY"
 	// CodeClientUnauthenticated rejects a client request that fails the
 	// configured identity allowlist (task 109): client identity is derived
 	// from the matched credential, never from client-controlled headers.
@@ -50,7 +56,7 @@ func New(code Code, message string, retryAfterMS int64) *Error {
 }
 func (e *Error) HTTPStatus() int {
 	switch e.Code {
-	case CodeInvalidRequest:
+	case CodeInvalidRequest, CodeUnsupportedCapability:
 		return 400
 	case CodeUnknownSymbol, CodeAmbiguousSymbol:
 		return 422

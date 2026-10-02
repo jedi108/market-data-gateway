@@ -10,6 +10,13 @@ import (
 // registered: TBank does not list it at all, and requests resolve as unknown
 // symbol.
 //
+// F20: physical futures instruments are NOT listed here. A real futures UID
+// (for example a physical GOLD contract) can only come from a reviewed online
+// verification against live TBank — none exists offline — so the production
+// list stays shares-only, and synthetic futures instruments live only in
+// tests. Serving futures additionally requires the persisted/refreshable
+// registry path (-tbank-instruments-file) because contracts roll.
+//
 // Every canonical symbol additionally accepts its "SYM/RUB" pair spelling.
 // VTBR also accepts the pre-rename "VTB"/"VTB/RUB" spellings for
 // compatibility.

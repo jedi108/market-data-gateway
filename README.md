@@ -106,6 +106,55 @@ plan. The existing scheduler remains the real-time admission authority.
 - [DOC/capacity_plan.md](DOC/capacity_plan.md) — capacity-plan switch semantics.
 - [DOC/adr/ADR-007-capacity-planning.md](DOC/adr/ADR-007-capacity-planning.md) — credential-group budget model.
 
+## Futures support and capability boundary (F20)
+
+The gateway serves **candles only** from the TBank market-data surface
+(`MarketDataService.GetCandles`; its `instrument_id` accepts both a share FIGI
+and a physical futures contract `instrument_uid`, so futures need no order or
+trading capability). Everything else a TBank account can do — orderbooks,
+trade/quote streams, last prices, instrument metadata lookups, and any order
+or sandbox RPC — stays with **direct TBank consumers** and is never proxied
+through the gateway. Silent fallback between sources is forbidden: an input
+outside the boundary fails with the typed `UNSUPPORTED_CAPABILITY` error
+(`internal/provider/tbank/capabilities.go`), never an empty response; an
+unregistered symbol fails with `UNKNOWN_SYMBOL` before any provider call.
+
+Futures identity contract:
+
+- Series identity is the **physical provider instrument UID** (per expiry),
+  never the logical alias: `model.SeriesKey` keys cache/SQLite by
+  venue|market|UID|timeframe|candle, so different expiries are different series
+  and a contract's history is never mixed with or rewritten by its successor.
+  The storage schema version stays owned by the migration chain; the response
+  envelope carries its own `schema_version`.
+- A logical alias (for example a rolling `GOLD` ticker) is a **resolution
+  input only**: within one registry snapshot it targets exactly one physical
+  contract, and an alias declared on two contracts is a fail-closed
+  ambiguous-alias configuration error.
+- Responses carry explicit `instrument` metadata (`instrument_type`,
+  canonical physical symbol, provider-id kind, `price_unit` — `points` for
+  futures / `currency` for shares, `volume_unit` — `lots`, quote currency,
+  and the futures `expiration_utc_ms`) so downstream never reconstructs the
+  physical contract or its units from a ticker. Share responses gain the same
+  additive field with their series identity unchanged.
+
+Registry refresh and restart recovery (`-tbank-instruments-file`): the
+instrument mapping can be replaced atomically (validate the full candidate
+snapshot, persist it with a temp-file rename, then swap the in-memory mapping
+under lock); on restart the persisted file is recovered (missing file falls
+back to the compiled-in reviewed share list; corrupt or foreign-schema files
+fail closed). Until reviewed online verification provides real futures UIDs,
+the production list stays shares-only — synthetic futures instruments exist
+only in tests.
+
+F20 metrics: `gateway_registry_instruments` and
+`gateway_registry_active_contract_expiry_epoch_seconds` (active physical
+contracts), `gateway_registry_refreshes_total` /
+`gateway_registry_schema_version` (registry updates and schema),
+`gateway_series_cache_source_total` (cache source by market type), and
+`gateway_series_source_age_seconds` (fetch-provenance age, separate from the
+market-age gauge).
+
 ## Project status
 
 Infrastructure code extracted for portfolio use; API and configuration may
