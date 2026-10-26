@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	depth     = 20
+	depth     = 10 // quant #612: L1–L5 фичи + BBO; 11–20 без гипотезы, вдвое меньше диска
 	pingMs    = 30000
 	stallWait = 2 * time.Minute
 	maxBack   = time.Minute
