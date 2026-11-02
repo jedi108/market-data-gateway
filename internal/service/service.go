@@ -318,6 +318,22 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	coalesced, refreshErr := s.cache.Do(ctx, request.Series, func() error {
 		return s.refresh(clientID, priority, request, requested)
 	})
+	// The flight is per series, not per window: a joiner only gets the
+	// leader's window. When that leaves this window uncovered (e.g. a batch
+	// of several windows of one series), run — or join — another flight.
+	for retries := 0; refreshErr == nil && coalesced && retries < maxJoinRetries; retries++ {
+		joined, err := s.cache.Lookup(request.Series, requested)
+		if err != nil {
+			return Result{}, err
+		}
+		joined = s.epochAwareLookup(request.Series, requested, joined)
+		if joined.Complete || !s.refreshPermitted(request.Series, joined.Missing) {
+			break
+		}
+		coalesced, refreshErr = s.cache.Do(ctx, request.Series, func() error {
+			return s.refresh(clientID, priority, request, requested)
+		})
+	}
 	if refreshErr != nil {
 		var upstream *upstreamFailure
 		if errors.As(refreshErr, &upstream) {
@@ -652,6 +668,10 @@ const maxTrackedRangeSignatures = 64
 // select one. One attempt covers the normal closed-bar refresh; the second
 // absorbs provider publication lag before the honest deferred-stale state.
 const defaultMaxRefreshAttemptsPerEpoch = 2
+
+// maxJoinRetries bounds how many more flights a request runs or joins after
+// a coalesced flight left its own window uncovered.
+const maxJoinRetries = 8
 
 // refreshEpochMS returns the closed-bar boundary that governs refresh
 // accounting for a series at time now: the current bar's open time, shifted

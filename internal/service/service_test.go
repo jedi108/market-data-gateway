@@ -426,3 +426,37 @@ func TestClosedOnlyLiveResponseKeepsPresentationEdgeOutOfCoverage(t *testing.T) 
 		t.Fatalf("provider request=%+v, want closed portion only", upstream.requests)
 	}
 }
+
+func TestJoinerWithAnotherWindowRunsItsOwnFlight(t *testing.T) {
+	upstream := &fakeProvider{started: make(chan struct{}, 1), release: make(chan struct{}), response: func(r model.CandleRequest) ([]model.Candle, error) { return candlesFor(r), nil }}
+	svc, store, scheduler := newService(t, t.TempDir()+"/cache.sqlite", upstream)
+	defer closeService(t, store, scheduler)
+	windows := []model.CandleRequest{request(0, 120), request(600, 720)}
+	errs := make([]error, len(windows))
+	counts := make([]int, len(windows))
+	var wg sync.WaitGroup
+	run := func(i int) {
+		defer wg.Done()
+		got, err := svc.Get(context.Background(), "batch", ratelimit.PriorityLiveRefresh, windows[i])
+		errs[i], counts[i] = err, len(got.Candles)
+	}
+	wg.Add(1)
+	go run(0)
+	<-upstream.started
+	wg.Add(1)
+	go run(1)
+	deadline := time.Now().Add(5 * time.Second)
+	for svc.Metrics().SingleflightJoins == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(upstream.release)
+	wg.Wait()
+	for i := range windows {
+		if errs[i] != nil || counts[i] != 2 {
+			t.Fatalf("window %d: err=%v candles=%d", i, errs[i], counts[i])
+		}
+	}
+	if svc.Metrics().SingleflightJoins == 0 || upstream.calls != 2 {
+		t.Fatalf("joins=%d calls=%d", svc.Metrics().SingleflightJoins, upstream.calls)
+	}
+}
