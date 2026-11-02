@@ -190,6 +190,11 @@ func TestToolsAgainstFakeGateway(t *testing.T) {
 		t.Fatalf("market_snapshot = %+v", snapshot)
 	}
 
+	partial := call[snapshotOut](t, session, "market_snapshot", map[string]any{"symbols": []string{"SBER", "NOPE"}, "timeframe": "1h"})
+	if len(partial.Items) != 2 || partial.Items[0].Error != "" || partial.Items[0].LastClose == nil || partial.Items[1].Error != "UNKNOWN_SYMBOL" || partial.Items[1].LastClose != nil {
+		t.Fatalf("market_snapshot with an unknown symbol = %+v", partial)
+	}
+
 	status := call[statusOut](t, session, "gateway_status", nil)
 	if status.Health != "ok" || !status.Ready || status.Build != "mcp-test" || status.NodeID != "node-test" || len(status.Timeframes) != 5 {
 		t.Fatalf("gateway_status = %+v", status)
@@ -221,7 +226,6 @@ func TestToolErrorsAreTyped(t *testing.T) {
 		{"bad window", gatewayURL, "get_candles", map[string]any{"symbol": "SBER", "timeframe": "1m", "from": "yesterday"}, "INVALID_REQUEST:"},
 		{"window unknown symbol", gatewayURL, "get_candles", map[string]any{"symbol": "NOPE", "timeframe": "1h", "from": "2026-01-05T00:00:00Z", "to": "2026-01-06T00:00:00Z"}, "UNKNOWN_SYMBOL:"},
 		{"window too wide", gatewayURL, "get_candles", map[string]any{"symbol": "SBER", "timeframe": "1m", "from": "2026-01-01", "to": "2026-01-25"}, "INVALID_REQUEST:"},
-		{"snapshot unknown symbol", gatewayURL, "market_snapshot", map[string]any{"symbols": []string{"SBER", "NOPE"}, "timeframe": "1h"}, "UNKNOWN_SYMBOL:"},
 		{"bad periods_per_year", gatewayURL, "get_volatility", map[string]any{"symbol": "SBER", "timeframe": "1d", "periods_per_year": -1}, "INVALID_REQUEST:"},
 		{"too many symbols", gatewayURL, "market_snapshot", map[string]any{"symbols": make([]string, 21), "timeframe": "1h"}, "INVALID_REQUEST:"},
 		{"gateway down", down.URL, "get_volatility", map[string]any{"symbol": "SBER", "timeframe": "1m"}, "GATEWAY_UNAVAILABLE:"},

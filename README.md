@@ -73,8 +73,8 @@ force. No order/execution calls, no writes. Indicators are pure functions in
 | `get_candles` | `venue` (default `tbank`), `symbol`, `timeframe`, `lookback` (bars, default 100) or `from`/`to` (ISO-8601), `limit` ≤ 1000 | OHLCV rows (decimal strings), `freshness`, `incomplete` |
 | `get_volatility` | `venue`, `symbol`, `timeframe`, `window` (default 14), `lookback` (default 200), `periods_per_year` (default 365 d / timeframe) | ATR, ATR % of price, realized vol (per bar and annualized by √`periods_per_year`), ATR percentile in lookback, `label` `low` (< 25) / `normal` / `high` (> 75) |
 | `get_trend` | `venue`, `symbol`, `timeframe` | EMA 20/50/200, EMA20 slope, ADX(14), price vs EMA200, `label` `up`/`down`/`flat` (flat if ADX < 20), `strength` `strong` if ADX ≥ 25 |
-| `market_snapshot` | `symbols[]` (≤ 20), `venue`, `timeframe` | per symbol: last close, change %, volatility and trend labels (one `/v1/candles/batch` call) |
-| `gateway_status` | — | health, ready, build, venues, timeframes |
+| `market_snapshot` | `symbols[]` (≤ 20), `venue`, `timeframe` | per symbol: last close, change %, volatility and trend labels (one `/v1/candles/batch` call; on an unregistered symbol, one call per symbol) — or a per-symbol typed `error` |
+| `gateway_status` | — | health, ready, build, node id, venues, timeframes |
 
 The server reads at most 500 bars per gateway request (168 for `1h`, the
 gateway's 7-day window), so the gateway's `limits.max_request_limit` must be

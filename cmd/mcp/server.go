@@ -50,6 +50,7 @@ const (
 	codeGatewayUnavailable = "GATEWAY_UNAVAILABLE"
 	codeInsufficientData   = "INSUFFICIENT_DATA"
 	codeIncompleteCoverage = "INCOMPLETE_COVERAGE"
+	codeUnknownSymbol      = "UNKNOWN_SYMBOL"
 )
 
 // toolError becomes an MCP tool error (isError: true) whose text starts with
@@ -565,6 +566,23 @@ func (g *gateway) marketSnapshot(ctx context.Context, _ *mcp.CallToolRequest, in
 		items[i] = batchItem{Venue: in.Venue, Symbol: symbol, Timeframe: in.Timeframe, FromUTCMS: from, ToUTCMS: to, Limit: int(chunkBars(in.Timeframe))}
 	}
 	results, err := g.batch(ctx, items)
+	var rejected *toolError
+	if errors.As(err, &rejected) && rejected.code == codeUnknownSymbol && len(items) > 1 {
+		// The gateway rejects the whole batch for one unregistered symbol;
+		// ask per symbol so every symbol gets its data or its own error.
+		results, err = make([]batchResult, len(items)), nil
+		for i := range items {
+			one, itemErr := g.batch(ctx, items[i:i+1])
+			if errors.As(itemErr, &rejected) {
+				results[i] = batchResult{Error: rejected.code, Message: rejected.message}
+				continue
+			}
+			if itemErr != nil {
+				return nil, out, itemErr
+			}
+			results[i] = one[0]
+		}
+	}
 	if err != nil {
 		return nil, out, err
 	}
@@ -640,7 +658,7 @@ func newServer(g *gateway, version string) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "get_candles", Annotations: readOnly, Description: "Closed OHLCV candles from the market-data gateway. Either lookback (most recent N bars, default 100) or a from/to ISO-8601 window (limit <= 1000)." + errorsNote}, g.getCandles)
 	mcp.AddTool(server, &mcp.Tool{Name: "get_volatility", Annotations: readOnly, Description: fmt.Sprintf("Volatility of one instrument: Wilder ATR(window, default 14), ATR %% of last close, realized vol (sample stdev of log returns over lookback, default 200 bars; annualized by sqrt(periods_per_year), default 365 days / timeframe; pass 252 for MOEX 1d), and the percentile rank of the current ATR among the lookback ATR values (ties count half). label = low if percentile < %g, high if > %g, else normal.", volLowPercentile, volHighPercentile) + errorsNote}, g.getVolatility)
 	mcp.AddTool(server, &mcp.Tool{Name: "get_trend", Annotations: readOnly, Description: fmt.Sprintf("Trend of one instrument over the last %d closed bars: EMA 20/50/200, EMA20 slope (%% per bar over %d bars), Wilder ADX(14), price vs EMA200. label = flat if ADX < %g; up if close > EMA50, EMA20 > EMA50 and slope > 0; down if close < EMA50, EMA20 < EMA50 and slope < 0; otherwise flat. strength = strong if ADX >= %g, else weak. Needs at least %d bars.", trendBars, slopeBars, adxTrendMin, adxStrong, minTrendBars) + errorsNote}, g.getTrend)
-	mcp.AddTool(server, &mcp.Tool{Name: "market_snapshot", Annotations: readOnly, Description: fmt.Sprintf("Quick read of up to %d symbols in one gateway batch call (one gateway window per symbol: 168 calendar bars for 1h, 500 otherwise): last close, change %% vs previous bar, volatility label and trend label with the same rules as get_volatility (window 14, lookback = all fetched bars) and get_trend. An unregistered symbol fails the whole call (the gateway validates the batch before any provider call); a per-symbol data failure carries its typed error code instead of values.", maxSnapshotItems) + errorsNote}, g.marketSnapshot)
+	mcp.AddTool(server, &mcp.Tool{Name: "market_snapshot", Annotations: readOnly, Description: fmt.Sprintf("Quick read of up to %d symbols in one gateway batch call (one gateway window per symbol: 168 calendar bars for 1h, 500 otherwise): last close, change %% vs previous bar, volatility label and trend label with the same rules as get_volatility (window 14, lookback = all fetched bars) and get_trend. Every symbol gets either values or its own typed error code (e.g. UNKNOWN_SYMBOL for an unregistered symbol); the other symbols still answer.", maxSnapshotItems) + errorsNote}, g.marketSnapshot)
 	mcp.AddTool(server, &mcp.Tool{Name: "gateway_status", Annotations: readOnly, Description: "Gateway health/readiness, build, node id, and the venues and timeframes it serves." + errorsNote}, g.gatewayStatus)
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "market_brief",
