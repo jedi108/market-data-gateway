@@ -340,32 +340,36 @@ type volatilityIn struct {
 	Timeframe string `json:"timeframe" jsonschema:"one of 1m, 5m, 15m, 1h, 1d"`
 	Window    int    `json:"window,omitempty" jsonschema:"ATR period, 2..100 (default 14)"`
 	Lookback  int    `json:"lookback,omitempty" jsonschema:"bars for the ATR percentile and realized vol, 10..800 (default 200)"`
+	// shortcut: one explicit number instead of per-venue session calendars.
+	PeriodsPerYear float64 `json:"periods_per_year,omitempty" jsonschema:"bars of this timeframe per year used to annualize realized vol (default 365 days / timeframe; e.g. 252 for MOEX 1d)"`
 }
 
 type volatility struct {
 	ATR                   float64 `json:"atr"`
 	ATRPct                float64 `json:"atr_pct" jsonschema:"ATR as % of the last close"`
 	RealizedVol           float64 `json:"realized_vol" jsonschema:"sample stdev of log returns per bar over lookback"`
-	RealizedVolAnnualized float64 `json:"realized_vol_annualized" jsonschema:"realized_vol * sqrt(365 days / timeframe)"`
+	RealizedVolAnnualized float64 `json:"realized_vol_annualized" jsonschema:"realized_vol * sqrt(periods_per_year)"`
 	ATRPercentile         float64 `json:"atr_percentile" jsonschema:"percentile rank (0..100) of the current ATR among the lookback ATR values"`
 	Label                 string  `json:"label" jsonschema:"low, normal or high"`
 }
 
 type volatilityOut struct {
-	Venue     string  `json:"venue"`
-	Symbol    string  `json:"symbol"`
-	Timeframe string  `json:"timeframe"`
-	Window    int     `json:"window"`
-	Lookback  int     `json:"lookback"`
-	Bars      int     `json:"bars" jsonschema:"closed bars used"`
-	LastClose float64 `json:"last_close"`
-	Freshness string  `json:"freshness"`
+	Venue          string  `json:"venue"`
+	Symbol         string  `json:"symbol"`
+	Timeframe      string  `json:"timeframe"`
+	Window         int     `json:"window"`
+	Lookback       int     `json:"lookback"`
+	PeriodsPerYear float64 `json:"periods_per_year" jsonschema:"bars per year used for realized_vol_annualized"`
+	Bars           int     `json:"bars" jsonschema:"closed bars used"`
+	LastClose      float64 `json:"last_close"`
+	Freshness      string  `json:"freshness"`
 	volatility
 }
 
 // computeVolatility derives the volatility block; percentile rank counts ties
 // as half so a constant ATR series sits at 50.
-func computeVolatility(high, low, close []float64, window, lookback int, step int64) (volatility, error) {
+// periodsPerYear <= 0 selects calendar time: 365 days / step.
+func computeVolatility(high, low, close []float64, window, lookback int, step int64, periodsPerYear float64) (volatility, error) {
 	n := len(close)
 	if n < window+2 {
 		return volatility{}, &toolError{codeInsufficientData, fmt.Sprintf("%d closed bars, need at least %d", n, window+2)}
@@ -392,8 +396,14 @@ func computeVolatility(high, low, close []float64, window, lookback int, step in
 	} else if percentile > volHighPercentile {
 		label = "high"
 	}
-	periodsPerYear := float64(365*24*time.Hour/time.Millisecond) / float64(step)
+	if periodsPerYear <= 0 {
+		periodsPerYear = calendarPeriodsPerYear(step)
+	}
 	return volatility{ATR: current, ATRPct: 100 * current / close[n-1], RealizedVol: rv, RealizedVolAnnualized: rv * math.Sqrt(periodsPerYear), ATRPercentile: percentile, Label: label}, nil
+}
+
+func calendarPeriodsPerYear(step int64) float64 {
+	return float64(365*24*time.Hour/time.Millisecond) / float64(step)
 }
 
 func (g *gateway) getVolatility(ctx context.Context, _ *mcp.CallToolRequest, in volatilityIn) (*mcp.CallToolResult, volatilityOut, error) {
@@ -410,6 +420,12 @@ func (g *gateway) getVolatility(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if in.Window < 2 || in.Window > 100 || in.Lookback < 10 || in.Lookback > 800 {
 		return nil, out, invalid("window must be 2..100 and lookback 10..800")
 	}
+	if in.PeriodsPerYear == 0 {
+		in.PeriodsPerYear = calendarPeriodsPerYear(timeframes[in.Timeframe])
+	}
+	if !(in.PeriodsPerYear >= 1 && in.PeriodsPerYear <= 1_000_000) {
+		return nil, out, invalid("periods_per_year must be 1..1000000")
+	}
 	candles, freshness, err := g.lastBars(ctx, in.Venue, in.Symbol, in.Timeframe, in.Lookback+in.Window+1)
 	if err != nil {
 		return nil, out, err
@@ -418,11 +434,11 @@ func (g *gateway) getVolatility(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, out, err
 	}
-	v, err := computeVolatility(high, low, close, in.Window, in.Lookback, timeframes[in.Timeframe])
+	v, err := computeVolatility(high, low, close, in.Window, in.Lookback, timeframes[in.Timeframe], in.PeriodsPerYear)
 	if err != nil {
 		return nil, out, err
 	}
-	return nil, volatilityOut{Venue: in.Venue, Symbol: in.Symbol, Timeframe: in.Timeframe, Window: in.Window, Lookback: in.Lookback, Bars: len(close), LastClose: close[len(close)-1], Freshness: freshness, volatility: v}, nil
+	return nil, volatilityOut{Venue: in.Venue, Symbol: in.Symbol, Timeframe: in.Timeframe, Window: in.Window, Lookback: in.Lookback, PeriodsPerYear: in.PeriodsPerYear, Bars: len(close), LastClose: close[len(close)-1], Freshness: freshness, volatility: v}, nil
 }
 
 // --- get_trend ---
@@ -566,7 +582,7 @@ func (g *gateway) marketSnapshot(ctx context.Context, _ *mcp.CallToolRequest, in
 		var v volatility
 		var t trend
 		if err == nil {
-			v, err = computeVolatility(high, low, close, 14, len(close), step)
+			v, err = computeVolatility(high, low, close, 14, len(close), step, 0)
 		}
 		if err == nil {
 			t, err = computeTrend(high, low, close)
@@ -622,7 +638,7 @@ func newServer(g *gateway, version string) *mcp.Server {
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	errorsNote := " Errors are tool errors whose text starts with a typed code (INVALID_REQUEST, UNKNOWN_SYMBOL, GATEWAY_UNAVAILABLE, INSUFFICIENT_DATA, or any gateway error code)."
 	mcp.AddTool(server, &mcp.Tool{Name: "get_candles", Annotations: readOnly, Description: "Closed OHLCV candles from the market-data gateway. Either lookback (most recent N bars, default 100) or a from/to ISO-8601 window (limit <= 1000)." + errorsNote}, g.getCandles)
-	mcp.AddTool(server, &mcp.Tool{Name: "get_volatility", Annotations: readOnly, Description: fmt.Sprintf("Volatility of one instrument: Wilder ATR(window, default 14), ATR %% of last close, realized vol (sample stdev of log returns over lookback, default 200 bars; annualized by sqrt(365 days / timeframe)), and the percentile rank of the current ATR among the lookback ATR values (ties count half). label = low if percentile < %g, high if > %g, else normal.", volLowPercentile, volHighPercentile) + errorsNote}, g.getVolatility)
+	mcp.AddTool(server, &mcp.Tool{Name: "get_volatility", Annotations: readOnly, Description: fmt.Sprintf("Volatility of one instrument: Wilder ATR(window, default 14), ATR %% of last close, realized vol (sample stdev of log returns over lookback, default 200 bars; annualized by sqrt(periods_per_year), default 365 days / timeframe; pass 252 for MOEX 1d), and the percentile rank of the current ATR among the lookback ATR values (ties count half). label = low if percentile < %g, high if > %g, else normal.", volLowPercentile, volHighPercentile) + errorsNote}, g.getVolatility)
 	mcp.AddTool(server, &mcp.Tool{Name: "get_trend", Annotations: readOnly, Description: fmt.Sprintf("Trend of one instrument over the last %d closed bars: EMA 20/50/200, EMA20 slope (%% per bar over %d bars), Wilder ADX(14), price vs EMA200. label = flat if ADX < %g; up if close > EMA50, EMA20 > EMA50 and slope > 0; down if close < EMA50, EMA20 < EMA50 and slope < 0; otherwise flat. strength = strong if ADX >= %g, else weak. Needs at least %d bars.", trendBars, slopeBars, adxTrendMin, adxStrong, minTrendBars) + errorsNote}, g.getTrend)
 	mcp.AddTool(server, &mcp.Tool{Name: "market_snapshot", Annotations: readOnly, Description: fmt.Sprintf("Quick read of up to %d symbols in one gateway batch call (one gateway window per symbol: 168 calendar bars for 1h, 500 otherwise): last close, change %% vs previous bar, volatility label and trend label with the same rules as get_volatility (window 14, lookback = all fetched bars) and get_trend. An unregistered symbol fails the whole call (the gateway validates the batch before any provider call); a per-symbol data failure carries its typed error code instead of values.", maxSnapshotItems) + errorsNote}, g.marketSnapshot)
 	mcp.AddTool(server, &mcp.Tool{Name: "gateway_status", Annotations: readOnly, Description: "Gateway health/readiness, build, node id, and the venues and timeframes it serves." + errorsNote}, g.gatewayStatus)

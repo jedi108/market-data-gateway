@@ -222,6 +222,7 @@ func TestToolErrorsAreTyped(t *testing.T) {
 		{"window unknown symbol", gatewayURL, "get_candles", map[string]any{"symbol": "NOPE", "timeframe": "1h", "from": "2026-01-05T00:00:00Z", "to": "2026-01-06T00:00:00Z"}, "UNKNOWN_SYMBOL:"},
 		{"window too wide", gatewayURL, "get_candles", map[string]any{"symbol": "SBER", "timeframe": "1m", "from": "2026-01-01", "to": "2026-01-25"}, "INVALID_REQUEST:"},
 		{"snapshot unknown symbol", gatewayURL, "market_snapshot", map[string]any{"symbols": []string{"SBER", "NOPE"}, "timeframe": "1h"}, "UNKNOWN_SYMBOL:"},
+		{"bad periods_per_year", gatewayURL, "get_volatility", map[string]any{"symbol": "SBER", "timeframe": "1d", "periods_per_year": -1}, "INVALID_REQUEST:"},
 		{"too many symbols", gatewayURL, "market_snapshot", map[string]any{"symbols": make([]string, 21), "timeframe": "1h"}, "INVALID_REQUEST:"},
 		{"gateway down", down.URL, "get_volatility", map[string]any{"symbol": "SBER", "timeframe": "1m"}, "GATEWAY_UNAVAILABLE:"},
 		{"gateway down status", down.URL, "gateway_status", nil, "GATEWAY_UNAVAILABLE:"},
@@ -257,8 +258,14 @@ func TestComputeTrendAndVolatilityLabels(t *testing.T) {
 	// A spike in the last bar's range puts the current ATR at the top.
 	spikeHigh := append([]float64(nil), high...)
 	spikeHigh[n-1] += 50
-	if v, _ := computeVolatility(spikeHigh, low, down, 14, 100, 60_000); v.Label != "high" {
+	if v, _ := computeVolatility(spikeHigh, low, down, 14, 100, 60_000, 0); v.Label != "high" {
 		t.Fatalf("range spike label = %q (percentile %v)", v.Label, v.ATRPercentile)
+	}
+	// periods_per_year: 0 keeps 365 calendar days, an explicit value overrides it.
+	calendar, _ := computeVolatility(high, low, down, 14, 100, 86_400_000, 0)
+	trading, _ := computeVolatility(high, low, down, 14, 100, 86_400_000, 252)
+	if math.Abs(calendar.RealizedVolAnnualized-calendar.RealizedVol*math.Sqrt(365)) > 1e-12 || math.Abs(trading.RealizedVolAnnualized-trading.RealizedVol*math.Sqrt(252)) > 1e-12 {
+		t.Fatalf("annualized calendar=%v trading=%v", calendar, trading)
 	}
 }
 

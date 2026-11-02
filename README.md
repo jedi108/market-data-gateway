@@ -71,15 +71,16 @@ force. No order/execution calls, no writes. Indicators are pure functions in
 | Tool | Input | Output (structured) |
 |---|---|---|
 | `get_candles` | `venue` (default `tbank`), `symbol`, `timeframe`, `lookback` (bars, default 100) or `from`/`to` (ISO-8601), `limit` ≤ 1000 | OHLCV rows (decimal strings), `freshness`, `incomplete` |
-| `get_volatility` | `venue`, `symbol`, `timeframe`, `window` (default 14), `lookback` (default 200) | ATR, ATR % of price, realized vol (per bar and annualized by √(365 d / timeframe)), ATR percentile in lookback, `label` `low` (< 25) / `normal` / `high` (> 75) |
+| `get_volatility` | `venue`, `symbol`, `timeframe`, `window` (default 14), `lookback` (default 200), `periods_per_year` (default 365 d / timeframe) | ATR, ATR % of price, realized vol (per bar and annualized by √`periods_per_year`), ATR percentile in lookback, `label` `low` (< 25) / `normal` / `high` (> 75) |
 | `get_trend` | `venue`, `symbol`, `timeframe` | EMA 20/50/200, EMA20 slope, ADX(14), price vs EMA200, `label` `up`/`down`/`flat` (flat if ADX < 20), `strength` `strong` if ADX ≥ 25 |
 | `market_snapshot` | `symbols[]` (≤ 20), `venue`, `timeframe` | per symbol: last close, change %, volatility and trend labels (one `/v1/candles/batch` call) |
 | `gateway_status` | — | health, ready, build, venues, timeframes |
 
 The server reads at most 500 bars per gateway request (168 for `1h`, the
 gateway's 7-day window), so the gateway's `limits.max_request_limit` must be
-at least 500. Annualized realized vol uses calendar time (365 days), which
-overstates it for session-traded venues compared with trading-day conventions.
+at least 500. Annualized realized vol defaults to calendar time (365 days), which
+overstates it for session-traded venues; pass `periods_per_year` (e.g. 252
+for MOEX `1d`) for a trading-day convention.
 
 Prompt: `market_brief(symbol, timeframe[, venue])` asks the model to call
 `get_trend` + `get_volatility` and write a short summary. The exact label
