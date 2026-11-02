@@ -40,6 +40,11 @@ func WithIdentityResolver(fn IdentityResolver) HandlerOption {
 	return func(h *GatewayHandler) { h.identity = IdentityResolver(fn) }
 }
 
+// WithNodeID adds the cluster node id to /v1/health and /v1/ready answers.
+func WithNodeID(id string) HandlerOption {
+	return func(h *GatewayHandler) { h.HealthHandler.nodeID = id }
+}
+
 // WithSeriesDescriptors installs the physical-instrument metadata lookup so
 // responses carry explicit identity/units (instrument type, price domain,
 // volume unit, futures expiration). When unset, responses keep the legacy

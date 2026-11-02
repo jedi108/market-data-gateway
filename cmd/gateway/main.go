@@ -242,7 +242,7 @@ func main() {
 	if err != nil {
 		logFatal(err.Error())
 	}
-	handlerOpts := []httpapi.HandlerOption{httpapi.WithSeriesDescriptors(tbankReg.Describe)}
+	handlerOpts := []httpapi.HandlerOption{httpapi.WithSeriesDescriptors(tbankReg.Describe), httpapi.WithNodeID(cfg.Cluster.NodeID)}
 	if clientDirectory.Enabled() {
 		logger.Info("client identity allowlist active", "identities", len(cfg.Auth.Clients))
 		handlerOpts = append(handlerOpts, httpapi.WithIdentityResolver(clientDirectory.Resolve))

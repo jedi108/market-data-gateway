@@ -52,7 +52,7 @@ func newFakeGateway(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := httpapi.NewGatewayHandlerWithBatchLimits("mcp-test", func() bool { return true }, svc, func(venue, symbol, timeframe string) (model.SeriesKey, error) {
+	handler, err := httpapi.NewGatewayHandlerWithIdentity("mcp-test", func() bool { return true }, svc, func(venue, symbol, timeframe string) (model.SeriesKey, error) {
 		if venue != "tbank" {
 			return model.SeriesKey{}, apperror.New(apperror.CodeInvalidRequest, "unsupported venue", 0)
 		}
@@ -60,7 +60,7 @@ func newFakeGateway(t *testing.T) string {
 			return model.SeriesKey{}, apperror.New(apperror.CodeUnknownSymbol, "unknown symbol", 0)
 		}
 		return model.SeriesKey{Venue: "tbank", MarketType: "shares", ProviderInstrumentID: "FIGI-" + symbol, Timeframe: timeframe, CandleType: "trade"}, nil
-	}, 500, 20, 4)
+	}, 500, 20, 4, httpapi.WithNodeID("node-test"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestToolsAgainstFakeGateway(t *testing.T) {
 	}
 
 	status := call[statusOut](t, session, "gateway_status", nil)
-	if status.Health != "ok" || !status.Ready || status.Build != "mcp-test" || len(status.Timeframes) != 5 {
+	if status.Health != "ok" || !status.Ready || status.Build != "mcp-test" || status.NodeID != "node-test" || len(status.Timeframes) != 5 {
 		t.Fatalf("gateway_status = %+v", status)
 	}
 

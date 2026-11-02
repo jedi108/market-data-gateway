@@ -597,18 +597,22 @@ type statusOut struct {
 	Health     string   `json:"health" jsonschema:"ok when /v1/health answers"`
 	Ready      bool     `json:"ready" jsonschema:"result of /v1/ready"`
 	Build      string   `json:"build" jsonschema:"gateway build (node binary version)"`
+	NodeID     string   `json:"node_id,omitempty" jsonschema:"cluster node id of the answering gateway; omitted by gateways that do not report it"`
 	Venues     []string `json:"venues" jsonschema:"venues the gateway can serve; binance/bybit only when the gateway runs with -crypto-mode"`
 	Timeframes []string `json:"timeframes"`
 }
 
 func (g *gateway) gatewayStatus(ctx context.Context, _ *mcp.CallToolRequest, _ statusIn) (*mcp.CallToolResult, statusOut, error) {
-	var health struct{ Status, Build string }
+	var health struct {
+		Status, Build string
+		NodeID        string `json:"node_id"`
+	}
 	if err := g.call(ctx, http.MethodGet, "/v1/health", nil, &health); err != nil {
 		return nil, statusOut{}, err
 	}
 	var ready struct{ Status string }
 	readyErr := g.call(ctx, http.MethodGet, "/v1/ready", nil, &ready)
-	return nil, statusOut{GatewayURL: g.baseURL, Health: health.Status, Ready: readyErr == nil && ready.Status == "ready", Build: health.Build, Venues: []string{"tbank", "binance", "bybit"}, Timeframes: []string{"1m", "5m", "15m", "1h", "1d"}}, nil
+	return nil, statusOut{GatewayURL: g.baseURL, Health: health.Status, Ready: readyErr == nil && ready.Status == "ready", Build: health.Build, NodeID: health.NodeID, Venues: []string{"tbank", "binance", "bybit"}, Timeframes: []string{"1m", "5m", "15m", "1h", "1d"}}, nil
 }
 
 // --- server ---
@@ -621,7 +625,7 @@ func newServer(g *gateway, version string) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "get_volatility", Annotations: readOnly, Description: fmt.Sprintf("Volatility of one instrument: Wilder ATR(window, default 14), ATR %% of last close, realized vol (sample stdev of log returns over lookback, default 200 bars; annualized by sqrt(365 days / timeframe)), and the percentile rank of the current ATR among the lookback ATR values (ties count half). label = low if percentile < %g, high if > %g, else normal.", volLowPercentile, volHighPercentile) + errorsNote}, g.getVolatility)
 	mcp.AddTool(server, &mcp.Tool{Name: "get_trend", Annotations: readOnly, Description: fmt.Sprintf("Trend of one instrument over the last %d closed bars: EMA 20/50/200, EMA20 slope (%% per bar over %d bars), Wilder ADX(14), price vs EMA200. label = flat if ADX < %g; up if close > EMA50, EMA20 > EMA50 and slope > 0; down if close < EMA50, EMA20 < EMA50 and slope < 0; otherwise flat. strength = strong if ADX >= %g, else weak. Needs at least %d bars.", trendBars, slopeBars, adxTrendMin, adxStrong, minTrendBars) + errorsNote}, g.getTrend)
 	mcp.AddTool(server, &mcp.Tool{Name: "market_snapshot", Annotations: readOnly, Description: fmt.Sprintf("Quick read of up to %d symbols in one gateway batch call (one gateway window per symbol: 168 calendar bars for 1h, 500 otherwise): last close, change %% vs previous bar, volatility label and trend label with the same rules as get_volatility (window 14, lookback = all fetched bars) and get_trend. An unregistered symbol fails the whole call (the gateway validates the batch before any provider call); a per-symbol data failure carries its typed error code instead of values.", maxSnapshotItems) + errorsNote}, g.marketSnapshot)
-	mcp.AddTool(server, &mcp.Tool{Name: "gateway_status", Annotations: readOnly, Description: "Gateway health/readiness, build, and the venues and timeframes it serves." + errorsNote}, g.gatewayStatus)
+	mcp.AddTool(server, &mcp.Tool{Name: "gateway_status", Annotations: readOnly, Description: "Gateway health/readiness, build, node id, and the venues and timeframes it serves." + errorsNote}, g.gatewayStatus)
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "market_brief",
 		Description: "Short market read of one instrument from get_trend and get_volatility.",
