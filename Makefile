@@ -18,13 +18,15 @@ SHELL := /bin/bash
 BUILD_DIR := build
 BIN_PATH  := $(BUILD_DIR)/gateway
 LINUX_BIN := $(BUILD_DIR)/gateway-linux-amd64
+MCP_BIN   := $(BUILD_DIR)/gateway-mcp
+MCP_LINUX := $(BUILD_DIR)/gateway-mcp-linux-amd64
 SMOKE_DIR := scripts/smoke
 
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.build=$(VERSION)
 
 .PHONY: help build build-linux test test-race vet fmt-check verify \
-        smoke smoke-cluster2 smoke-cluster3 smoke-loglevel smoke-packaging
+        smoke mcp-smoke smoke-cluster2 smoke-cluster3 smoke-loglevel smoke-packaging
 
 .DEFAULT_GOAL := help
 
@@ -35,7 +37,7 @@ help: ## Show this help
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' | sort
 	@echo ""
 	@echo "Local verification:"
-	@echo "  make verify          — fmt-check + vet + test + single-node smoke"
+	@echo "  make verify          — fmt-check + vet + test + single-node smoke + MCP smoke"
 	@echo "  make smoke-cluster2  — two-node fake-provider cluster smoke"
 	@echo "  make smoke-cluster3  — three-node routing/version-switch smoke"
 	@echo "  make smoke-loglevel  — no cache-hit events at INFO log level"
@@ -45,15 +47,19 @@ help: ## Show this help
 # Build
 # =============================================================================
 
-build: ## Build the static host binary (CGO_ENABLED=0) -> build/gateway
+build: ## Build the static host binaries (CGO_ENABLED=0) -> build/gateway, build/gateway-mcp
 	CGO_ENABLED=0 go build -trimpath \
 	  -ldflags '$(LDFLAGS)' -o $(BIN_PATH) ./cmd/gateway
-	@echo "built $(BIN_PATH) (version $(VERSION))"
+	CGO_ENABLED=0 go build -trimpath \
+	  -ldflags '$(LDFLAGS)' -o $(MCP_BIN) ./cmd/mcp
+	@echo "built $(BIN_PATH) $(MCP_BIN) (version $(VERSION))"
 
-build-linux: ## Cross-compile the static linux/amd64 binary -> build/gateway-linux-amd64
+build-linux: ## Cross-compile static linux/amd64 binaries -> build/gateway-linux-amd64, build/gateway-mcp-linux-amd64
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 	  -ldflags '$(LDFLAGS)' -o $(LINUX_BIN) ./cmd/gateway
-	@echo "built $(LINUX_BIN) (version $(VERSION))"
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+	  -ldflags '$(LDFLAGS)' -o $(MCP_LINUX) ./cmd/mcp
+	@echo "built $(LINUX_BIN) $(MCP_LINUX) (version $(VERSION))"
 
 # =============================================================================
 # Static analysis and tests
@@ -73,7 +79,7 @@ fmt-check: ## gofmt check (every listed file is a failure)
 	  if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi; \
 	  echo "gofmt clean"
 
-verify: fmt-check vet test smoke ## Full local verification suite (fmt, vet, test, single-node smoke)
+verify: fmt-check vet test smoke mcp-smoke ## Full local verification suite (fmt, vet, test, single-node smoke, MCP stdio smoke)
 
 # =============================================================================
 # Smokes (fake provider, loopback clients, synthetic tokens)
@@ -81,6 +87,9 @@ verify: fmt-check vet test smoke ## Full local verification suite (fmt, vet, tes
 
 smoke: ## Local single-node fake-provider smoke (loopback only, config/gateway.local.example.yaml)
 	bash $(SMOKE_DIR)/local_smoke.sh
+
+mcp-smoke: ## MCP stdio smoke: fake gateway + gateway-mcp, tools/list + get_volatility (loopback, no token)
+	bash $(SMOKE_DIR)/mcp_smoke.sh
 
 smoke-cluster2: ## Two-node cluster smoke (client loopback, peer binds on a discovered private IPv4)
 	bash $(SMOKE_DIR)/cluster2_smoke.sh

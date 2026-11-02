@@ -21,12 +21,12 @@ call during tests or startup validation.
 ## Build and test
 
 ```bash
-make build          # CGO_ENABLED=0 binary in build/gateway
+make build          # CGO_ENABLED=0 binaries build/gateway, build/gateway-mcp
 make test           # CGO_ENABLED=0 go test ./...
 make test-race      # CGO_ENABLED=1 go test -race ./...
 make vet
 make fmt-check
-make verify         # fmt-check + vet + test + local smoke
+make verify         # fmt-check + vet + test + local smoke + MCP smoke
 ```
 
 Generated TBank bindings are based on the pinned `RussianInvestments/invest-python` source revision `2a0074a` (Apache-2.0; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); only `common.proto`, `marketdata.proto`, and `field_behavior.proto` are checked in under `internal/provider/tbank/gen`. The bindings are generated with `protoc v5.29.3`, `protoc-gen-go v1.36.12`, and `protoc-gen-go-grpc v1.5.1`; provider protobuf imports are deliberately confined to `internal/provider/tbank`.
@@ -58,6 +58,92 @@ The real TBank provider requires `TBANK_MARKET_DATA_TOKEN` (or the configured
 `token_env`) plus an explicit `-tbank-endpoint`; it is never constructed
 implicitly. Secrets are read from the environment only and never appear in
 config files or logs.
+
+## MCP server
+
+`cmd/mcp` (`build/gateway-mcp`) is a read-only [Model Context Protocol](https://modelcontextprotocol.io)
+server for AI agents. It is a thin client of the gateway client API
+(`/v1/candles`, `/v1/candles/batch`, `/v1/health`, `/v1/ready`) and never talks
+to upstream providers, so cache, singleflight and the budget guard stay in
+force. No order/execution calls, no writes. Indicators are pure functions in
+`internal/indicators` (Wilder ATR/ADX, EMA, realized vol) with golden tests.
+
+| Tool | Input | Output (structured) |
+|---|---|---|
+| `get_candles` | `venue` (default `tbank`), `symbol`, `timeframe`, `lookback` (bars, default 100) or `from`/`to` (ISO-8601), `limit` ≤ 1000 | OHLCV rows (decimal strings), `freshness`, `incomplete` |
+| `get_volatility` | `venue`, `symbol`, `timeframe`, `window` (default 14), `lookback` (default 200) | ATR, ATR % of price, realized vol (per bar and annualized by √(365 d / timeframe)), ATR percentile in lookback, `label` `low` (< 25) / `normal` / `high` (> 75) |
+| `get_trend` | `venue`, `symbol`, `timeframe` | EMA 20/50/200, EMA20 slope, ADX(14), price vs EMA200, `label` `up`/`down`/`flat` (flat if ADX < 20), `strength` `strong` if ADX ≥ 25 |
+| `market_snapshot` | `symbols[]` (≤ 20), `venue`, `timeframe` | per symbol: last close, change %, volatility and trend labels (one `/v1/candles/batch` call) |
+| `gateway_status` | — | health, ready, build, venues, timeframes |
+
+The server reads at most 500 bars per gateway request (168 for `1h`, the
+gateway's 7-day window), so the gateway's `limits.max_request_limit` must be
+at least 500. Annualized realized vol uses calendar time (365 days), which
+overstates it for session-traded venues compared with trading-day conventions.
+
+Prompt: `market_brief(symbol, timeframe[, venue])` asks the model to call
+`get_trend` + `get_volatility` and write a short summary. The exact label
+rules are part of each tool description. Errors are MCP tool errors
+(`isError: true`) whose text starts with a typed code: `INVALID_REQUEST`,
+`UNKNOWN_SYMBOL`, `GATEWAY_UNAVAILABLE`, `INSUFFICIENT_DATA`, or any gateway
+error code.
+
+Configuration (environment only; secrets are never logged or returned):
+
+| Variable / flag | Meaning |
+|---|---|
+| `-gateway-url` / `MARKET_DATA_GATEWAY_URL` | gateway client API base URL (default `http://127.0.0.1:8088`) |
+| `MARKET_DATA_GATEWAY_TOKEN` | optional bearer sent to the gateway (client identity allowlist) |
+| `-transport` | `stdio` (default) or `http` (Streamable HTTP at `/mcp`) |
+| `-listen` | HTTP listen address, default `127.0.0.1:8090`; literal loopback or private (RFC 1918) IP only |
+| `GATEWAY_MCP_TOKEN` | bearer token required by the HTTP transport |
+
+### stdio (local agents)
+
+Claude Code:
+
+```bash
+claude mcp add market-data -e MARKET_DATA_GATEWAY_URL=http://127.0.0.1:8088 -- /path/to/build/gateway-mcp
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.market-data]
+command = "/path/to/build/gateway-mcp"
+env = { MARKET_DATA_GATEWAY_URL = "http://127.0.0.1:8088" }
+```
+
+OpenCode (`opencode.json`):
+
+```json
+{
+  "mcp": {
+    "market-data": {
+      "type": "local",
+      "command": ["/path/to/build/gateway-mcp"],
+      "environment": { "MARKET_DATA_GATEWAY_URL": "http://127.0.0.1:8088" }
+    }
+  }
+}
+```
+
+### Streamable HTTP (remote agents)
+
+The HTTP transport refuses to start without `GATEWAY_MCP_TOKEN` or on a
+public / hostname address (same fail-closed rule as the peer API); a missing or
+wrong bearer token gets `401`.
+
+```bash
+export GATEWAY_MCP_TOKEN=<random secret>
+./build/gateway-mcp -transport=http -listen=10.0.0.5:8090 -gateway-url http://127.0.0.1:8088
+# client: POST http://10.0.0.5:8090/mcp with "Authorization: Bearer $GATEWAY_MCP_TOKEN"
+claude mcp add --transport http market-data http://10.0.0.5:8090/mcp --header "Authorization: Bearer $GATEWAY_MCP_TOKEN"
+```
+
+`make mcp-smoke` starts the fake gateway and the MCP server over stdio, runs
+`tools/list` and one `get_volatility` call, and requires a clean exit (no
+token, loopback only). It is part of `make verify`.
 
 ## Configuration
 

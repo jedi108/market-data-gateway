@@ -5,13 +5,14 @@
 Requirements: Go 1.25+ (see `go.mod`), `bash`, `curl`.
 
 ```bash
-make build       # CGO_ENABLED=0 binary in build/gateway
+make build       # CGO_ENABLED=0 binaries build/gateway, build/gateway-mcp
 make test        # CGO_ENABLED=0 go test ./...
 make test-race   # CGO_ENABLED=1 go test -race ./...
 make vet
 make fmt-check
 make smoke       # local fake-provider end-to-end smoke
-make verify      # fmt-check + vet + test + smoke
+make mcp-smoke   # MCP stdio smoke against the fake gateway
+make verify      # fmt-check + vet + test + smoke + mcp-smoke
 ```
 
 ## Style rules

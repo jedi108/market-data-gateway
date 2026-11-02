@@ -397,3 +397,8 @@ func isLoopbackURL(raw string) bool {
 	raw = strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
 	return isLoopback(raw)
 }
+
+// NonPublicAddress reports whether host:port names a literal loopback or
+// private IP — the same fail-closed address rule as the peer boundary, for
+// other listeners (e.g. the MCP HTTP transport). Hostnames are rejected.
+func NonPublicAddress(address string) bool { return isLoopback(address) || isPrivate(address) }
