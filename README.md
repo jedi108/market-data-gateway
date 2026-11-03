@@ -276,6 +276,138 @@ claude mcp add market-data -e MARKET_DATA_GATEWAY_URL=http://127.0.0.1:8088 -- .
   типизированная ошибка `UNSUPPORTED_CAPABILITY`, неизвестный символ —
   `UNKNOWN_SYMBOL` ещё до вызова провайдера.
 
+## 7. Конфигурация
+
+Один YAML-файл (`-config`), секреты — только в переменных окружения,
+поведение провайдера — флагами командной строки. Конфиг читается
+[fail-closed](DOC/terms/reliability.md#fail-closed): неизвестное поле, пропущенное
+обязательное значение или нарушенный инвариант — сервис не стартует и
+пишет причину. «Тихих» значений по умолчанию для production нет.
+
+| Файл | Назначение |
+|---|---|
+| [config/gateway.local.example.yaml](config/gateway.local.example.yaml) | рабочий локальный конфиг: один узел, loopback, fake-провайдер |
+| [config/gateway.example.yaml](config/gateway.example.yaml) | справочник схемы для кластера: каждое `REQUIRED_*` нужно заменить измеренным и проверенным значением, иначе сервис не стартует |
+
+### Блоки конфига
+
+**`cluster` — узел и топология**
+
+| Поле | Смысл |
+|---|---|
+| `cluster_id`, `node_id` | имя кластера и этого узла; `node_id` обязан быть в `nodes` |
+| `routing_version` | положительная версия маршрутизации, соль [rendezvous-хеша](DOC/terms/cluster.md#weighted-rendezvous-hashing); смена версии — контролируемое перераспределение серий |
+| `nodes[]` | `id`, `weight` (доля серий), `peer_url` (приватный адрес peer API); `peer_url` уникальны |
+| `failover_mode` | `manual` (по умолчанию): к провайдеру ходит только primary. `automatic`: standby забирает серию через [fencing-аренду](DOC/terms/cluster.md#fencing-токен) |
+| `witnesses[]` | `id`, `peer_url` — [свидетели](DOC/terms/cluster.md#кворум-и-свидетели) кворума без данных; для `automatic` нужно не меньше двух (кворум ≥ 3 участников) |
+
+**`listeners` — адреса**
+
+| Поле | Смысл |
+|---|---|
+| `client` | клиентский API; **только loopback** — наружу шлюз выставляется через MCP-слой или прокси |
+| `peer` | peer API; приватный адрес, совпадающий с хостом своего `peer_url`. Loopback разрешён только для одного узла в режиме `manual` без свидетелей |
+
+**`auth` — кто допущен**
+
+| Поле | Смысл |
+|---|---|
+| `node_token_env` | имя переменной окружения с общим секретом узлов для peer API (обязательно) |
+| `clients[]` | необязательный allowlist клиентов: `id`, `token_env`, `priority` (`live_refresh` или `warmup`). Идентичность и [приоритет](DOC/terms/load.md#приоритеты) берутся из bearer-токена, а не из заголовков — клиент не может сам себе поднять приоритет |
+
+**`providers.tbank` — бюджет брокера**
+
+| Поле | Смысл |
+|---|---|
+| `credential_group` | несекретное имя группы учётных данных, делящей один лимит брокера |
+| `token_env` | имя переменной с токеном T-Bank (сам токен в конфиг не попадает) |
+| `safe_budget_per_minute` | измеренный безопасный лимит вызовов в минуту на всю группу |
+| `node_hard_budget_per_minute` | доля этого узла; обязана совпадать с его записью в карте ниже |
+| `node_hard_budgets_per_minute` | карта `node_id → доля` для каждого участника; одинаковая на всех узлах. Инвариант: `sum(долей) ≤ safe_budget_per_minute` |
+
+**`limits` — пределы и поведение кеша**
+
+| Поле | Смысл |
+|---|---|
+| `request_timeout_ms` | предел одного запроса, включая peer-хоп и фоновое обновление |
+| `max_request_limit` | максимум свечей в одном запросе (MCP-серверу нужно ≥ 500) |
+| `max_batch_items`, `batch_fan_out` | размер [батча](DOC/terms/load.md#батч-и-fan-out) и параллелизм его позиций |
+| `cache_retention_ms` | срок хранения в SQLite и одновременно максимальный возраст, при котором устаревший ответ ещё `stale_acceptable` |
+| `storage_path` | путь к SQLite-файлу [реплика-кеша](DOC/terms/cache.md#реплика-кеш) |
+| `queue_capacity`, `worker_count` | очередь и пул воркеров планировщика |
+| `max_retries`, `retry_base_delay_ms` | число повторов и база [backoff](DOC/terms/load.md#backoff) с [джиттером](DOC/terms/load.md#джиттер) |
+| `per_client_quota_per_minute`, `max_tracked_clients` | [квота клиента](DOC/terms/load.md#квота-клиента) и предел отслеживаемых клиентов |
+| `drain_timeout_ms` | сколько ждать доделки работы при остановке ([drain](DOC/terms/load.md#drain)) |
+| `lease_ttl_ms` | срок [аренды](DOC/terms/cluster.md#аренда) без продления; по умолчанию 30 000 |
+| `publication_grace_ms` | [грейс публикации](DOC/terms/candles.md#грейс-публикации) свежезакрытой свечи; 0 — выключен |
+| `max_refresh_attempts_per_epoch` | лимит обновлений серии за [эпоху](DOC/terms/candles.md#эпоха-обновления); 0 — по умолчанию 2 |
+
+Все поля `limits`, кроме трёх последних, обязательны и должны быть положительными.
+
+**Необязательные блоки**
+
+| Блок | Поля | Смысл |
+|---|---|---|
+| `warmup` | `enabled`, `timeframes` (`1m`, `5m`, `15m`, `30m`, `1h`, `1d`), `series_per_minute`, `window_limit` (≤ `max_request_limit`) | [прогрев](DOC/terms/cache.md#прогрев) кеша после старта с заданным темпом |
+| `instrument_registry` | `refresh_interval_ms` | период перечитывания реестра инструментов для [ролла](DOC/terms/market.md#ролл) без рестарта; 0 — только при старте. Работает вместе с `-tbank-instruments-file` |
+| `capacity_plan` | `mode` (`off` / `shadow` / `enforce`), `credential_group`, `gateway_count`, `target_utilization`, `retry_factor`, `workloads[]` (`timeframe`, `instruments`, `requests_per_candle`, `freshness_sla_ms`, `source`) | [прогноз ёмкости](DOC/terms/load.md#capacity-plan); в `enforce` вселенная `workloads` должна совпасть с `warmup`. Подробнее — [DOC/capacity_plan.md](DOC/capacity_plan.md) |
+
+Пример необязательных возможностей поверх локального конфига:
+
+```yaml
+auth:
+  node_token_env: GATEWAY_NODE_TOKEN
+  clients:
+    - id: freqtrade
+      token_env: GATEWAY_CLIENT_FREQTRADE_TOKEN
+      priority: live_refresh
+    - id: research
+      token_env: GATEWAY_CLIENT_RESEARCH_TOKEN
+      priority: warmup
+limits:
+  # ...обязательные поля...
+  publication_grace_ms: 3000
+  max_refresh_attempts_per_epoch: 2
+warmup:
+  enabled: true
+  timeframes: [1h, 1d]
+  series_per_minute: 60
+  window_limit: 500
+```
+
+### Флаги командной строки `gateway`
+
+| Флаг | Смысл |
+|---|---|
+| `-config` | путь к YAML-конфигу |
+| `-provider` | `fake` — локальная проверка; реальный T-Bank требует явного `-tbank-endpoint` |
+| `-tbank-endpoint` | `host:port` T-Bank Invest API; никогда не подставляется неявно |
+| `-tbank-instruments-file` | JSON-реестр инструментов: восстанавливается при старте, атомарно обновляется при ролле |
+| `-crypto-mode` | `fake` включает крипто-площадки для локальной проверки; пусто — выключены |
+| `-log-level` | `DEBUG`, `INFO` (по умолчанию), `WARN`, `ERROR` |
+| `-cleanup-once` | один проход очистки SQLite по `cache_retention_ms` и выход |
+
+### Переменные окружения
+
+| Переменная | Кто читает | Смысл |
+|---|---|---|
+| имя из `auth.node_token_env` (например `GATEWAY_NODE_TOKEN`) | gateway | общий секрет узлов для peer API |
+| имя из `providers.tbank.token_env` (например `TBANK_MARKET_DATA_TOKEN`) | gateway | токен T-Bank, только для чтения рыночных данных |
+| имена из `auth.clients[].token_env` | gateway | bearer-токены клиентов |
+| `MARKET_DATA_GATEWAY_URL`, `MARKET_DATA_GATEWAY_TOKEN` | gateway-mcp | адрес шлюза и токен клиента |
+| `GATEWAY_MCP_TOKEN` | gateway-mcp | bearer для HTTP-транспорта MCP |
+
+Секреты не пишутся ни в конфиг, ни в логи, ни в ответы API.
+
+### Что проверяется при старте
+
+- клиентский listener — loopback, peer — приватный адрес (для кластера — не loopback);
+- `node_id` есть в `nodes`, `peer_url` уникальны, адрес `peer` совпадает со своим `peer_url`;
+- бюджет: доля есть у каждого участника, сумма долей ≤ безопасного лимита, своя доля совпадает с картой;
+- `automatic` failover — не меньше двух свидетелей с приватными адресами;
+- приоритеты клиентов только `live_refresh` или `warmup`, таймфреймы прогрева из списка и без повторов;
+- `capacity_plan` в `enforce` — осуществимый план; иначе `/v1/ready` не станет готовым.
+
 ---
 
 ## Архитектурные принципы
@@ -341,9 +473,7 @@ curl -s 'http://127.0.0.1:8088/v1/candles?venue=tbank&symbol=SBER&timeframe=1m&f
 | `make smoke` / `make mcp-smoke` | end-to-end на fake-провайдере |
 | `make verify` | полный набор проверок |
 
-`config/gateway.local.example.yaml` — рабочий локальный конфиг;
-`config/gateway.example.yaml` — справочник схемы, где каждое `REQUIRED_*`
-нужно заменить проверенным значением, иначе сервис не стартует.
+Все настройки, флаги и переменные окружения — в разделе [Конфигурация](#7-конфигурация).
 
 ---
 
