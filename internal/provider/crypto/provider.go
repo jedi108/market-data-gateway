@@ -65,6 +65,11 @@ func (p *Provider) FetchCandles(ctx context.Context, request model.CandleRequest
 	if err := request.Series.Validate(); err != nil {
 		return nil, model.ProviderMetadata{}, apperror.New(apperror.CodeInvalidRequest, err.Error(), 0)
 	}
+	// The current fetcher only retrieves trade klines. Never label them as
+	// mark or funding data, including when called directly by a peer.
+	if request.Series.CandleType != "trade" {
+		return nil, model.ProviderMetadata{}, apperror.New(apperror.CodeUnsupportedCapability, "crypto fetcher only serves trade candles", 0)
+	}
 	venue := request.Series.Venue
 	if venue != "binance" && venue != "bybit" {
 		return nil, model.ProviderMetadata{}, apperror.New(apperror.CodeInvalidRequest, "crypto provider only serves binance/bybit", 0)

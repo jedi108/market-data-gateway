@@ -109,11 +109,6 @@ func (r *Registry) Resolve(venue, marketType, candleType, symbol string) (Instru
 	}
 	ins, ok := r.instruments[indexKey(venue, marketType, candleType, symbol)]
 	if !ok {
-		// Fallback: also try trade candle type for the same symbol so a client
-		// that omits candle_type still resolves common spot pairs.
-		ins, ok = r.instruments[indexKey(venue, marketType, "trade", symbol)]
-	}
-	if !ok {
 		return Instrument{}, apperror.New(apperror.CodeUnknownSymbol, fmt.Sprintf("unknown crypto symbol %q for venue %s", symbol, venue), 0)
 	}
 	return ins, nil

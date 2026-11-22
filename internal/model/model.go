@@ -120,3 +120,12 @@ type ProviderMetadata struct {
 	RateLimitRemaining int64
 	RateLimitResetMS   int64
 }
+
+// FundingEvent is a settled payment rate, not evidence of live availability.
+type FundingEvent struct {
+	Ts           int64  `json:"ts"`
+	Rate         string `json:"rate"`
+	IntervalH    int    `json:"interval_h"`
+	AvailableAt  int64  `json:"available_at"`
+	Availability string `json:"availability"`
+}

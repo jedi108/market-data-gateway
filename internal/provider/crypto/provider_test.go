@@ -171,3 +171,36 @@ func TestMuxRoutesByVenue(t *testing.T) {
 		t.Fatalf("expected typed invalid request for unknown venue, got %T %[1]v", err)
 	}
 }
+
+func TestResolveDoesNotFallbackToTradeForOtherCandleTypes(t *testing.T) {
+	reg := testRegistry(t)
+	for _, candleType := range []string{"mark", "funding"} {
+		t.Run(candleType, func(t *testing.T) {
+			if _, err := reg.ResolveKey("binance", "BTC/USDT", "1h", "spot", candleType); err == nil {
+				t.Fatal("expected refusal, not a trade series")
+			}
+		})
+	}
+	key, err := reg.ResolveKey("binance", "BTC/USDT", "1h", "spot", "")
+	if err != nil || key.CandleType != "trade" {
+		t.Fatalf("omitted type must still resolve trade: key=%+v err=%v", key, err)
+	}
+}
+
+func TestProviderRefusesNonTradeCandlesWithoutFetching(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	p := New(fetcher, testRegistry(t))
+	for _, candleType := range []string{"mark", "funding"} {
+		t.Run(candleType, func(t *testing.T) {
+			req := model.CandleRequest{Series: model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: candleType}}
+			_, _, err := p.FetchCandles(context.Background(), req)
+			ae, ok := err.(*apperror.Error)
+			if !ok || ae.Code != apperror.CodeUnsupportedCapability {
+				t.Fatalf("expected unsupported capability, got %v", err)
+			}
+			if fetcher.calls != 0 {
+				t.Fatal("non-trade request reached trade fetcher")
+			}
+		})
+	}
+}
