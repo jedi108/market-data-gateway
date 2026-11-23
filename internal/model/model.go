@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 )
 
@@ -147,12 +148,14 @@ type FundingEvent struct {
 	Availability string `json:"availability"`
 }
 
+var fundingDecimalPattern = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
+
 // Validate checks the historical funding representation without inventing a live availability time.
 func (e FundingEvent) Validate() error {
 	if e.Ts < 0 || e.IntervalH <= 0 || e.AvailableAt != e.Ts || e.Availability != "historical_payment_assumption" {
 		return fmt.Errorf("invalid funding event")
 	}
-	if _, ok := new(big.Rat).SetString(e.Rate); !ok {
+	if !fundingDecimalPattern.MatchString(e.Rate) {
 		return fmt.Errorf("invalid funding rate")
 	}
 	return nil

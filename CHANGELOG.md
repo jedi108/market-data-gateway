@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — fix(gateway): reject unproven pins and nondecimal funding (refs #1048)
+
+- Fail closed without independently evidenced archive pins; validate funding rates as decimal strings and document diagnostic spot limitation.
+
 ## 2026-11-23 — test(gateway): verify funding HTTP metadata and spot (refs #1048)
 
 - Exercise reconciled archive/API fixtures through GET and cache for 4h/8h payment availability; preserve fake-mode Binance spot trade coverage.

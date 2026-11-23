@@ -22,11 +22,13 @@ for `venue=binance`, `symbol=BTC/USDT:USDT`, and `timeframe=8h`. The normal wind
 limit and `include_incomplete=false` parameters remain required. The response
 has typed `funding_events` and diagnostic labels in `series`.
 
-Only the BTCUSDT January 2024 funding archive is pinned. The gateway requires
+No funding archive is currently pinned: independent digest evidence is unavailable,
+so funding requests fail closed. The gateway requires
 both the pinned archive and matching API observations; missing pins, conflicting
 sources, an empty window, or an over-limit result fail closed. Reconciliation is
 diagnostic agreement, **not proof of completeness**. The 8h series identity
 is not a claim that every event's interval is 8h; use each event's `interval_h`.
+Diagnostic mode does not serve spot trade candles; fake mode remains unchanged.
 Non-owner funding peer transport and mark GET are not implemented and fail
 closed. No live availability is inferred from the historical payment time.
 

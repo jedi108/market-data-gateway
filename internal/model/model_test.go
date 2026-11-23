@@ -59,3 +59,15 @@ func TestCandleRejectsInvalidOHLC(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestFundingEventRateRequiresDecimal(t *testing.T) {
+	for _, tc := range []struct {
+		rate  string
+		valid bool
+	}{{"0.0001", true}, {"-1.25", true}, {"1/2", false}, {"0x10", false}, {"1e-4", false}, {"NaN", false}} {
+		event := FundingEvent{Ts: 1, Rate: tc.rate, IntervalH: 8, AvailableAt: 1, Availability: "historical_payment_assumption"}
+		if (event.Validate() == nil) != tc.valid {
+			t.Errorf("rate %q: valid = %v", tc.rate, tc.valid)
+		}
+	}
+}
