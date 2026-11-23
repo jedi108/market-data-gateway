@@ -64,7 +64,8 @@ func TestReconciledMarkSourceRangeAndFailures(t *testing.T) {
 			sched := ratelimit.NewScheduler(ratelimit.Config{NodeBudgetPerMinute: 3, PerClientQuotaPerMinute: 3, MaxTrackedClients: 2, QueueCapacity: 2, WorkerCount: 1, RetryBaseDelay: time.Millisecond})
 			defer sched.Drain(context.Background())
 			ch, err := sched.Submit(context.Background(), "client", ratelimit.PriorityLiveRefresh, func(ctx context.Context) error {
-				rows, err := s.Fetch(ctx, key, tc.from, tc.to, 10)
+				provider := &DiagnosticProvider{mark: s}
+				rows, _, err := provider.FetchCandles(ctx, model.CandleRequest{Series: key, FromUTCMS: tc.from, ToUTCMS: tc.to, Limit: 10})
 				if tc.success && (err != nil || len(rows) != 1) {
 					return fmt.Errorf("rows=%v error=%v", rows, err)
 				}
