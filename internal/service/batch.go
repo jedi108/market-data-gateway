@@ -44,6 +44,8 @@ func (s *Service) GetBatch(ctx context.Context, clientID string, priority rateli
 		results[i] = BatchResult{Index: i, Series: requests[i].Series}
 		if err := requests[i].Series.Validate(); err != nil {
 			results[i].Error = err
+		} else if requests[i].Series.Completeness == "unknown" {
+			results[i].Error = apperror.New(apperror.CodeCoverageUnknown, "series coverage is unknown", 0)
 		} else if requests[i].FromUTCMS < 0 || requests[i].ToUTCMS <= requests[i].FromUTCMS || requests[i].Limit <= 0 {
 			results[i].Error = apperror.New(apperror.CodeInvalidRequest, "batch item window or limit is invalid", 0)
 		}

@@ -255,6 +255,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	if err := request.Series.Validate(); err != nil {
 		return Result{}, err
 	}
+	if request.Series.Completeness == "unknown" {
+		return Result{}, apperror.New(apperror.CodeCoverageUnknown, "series coverage is unknown", 0)
+	}
 	if request.FromUTCMS < 0 || request.ToUTCMS <= request.FromUTCMS {
 		return Result{}, fmt.Errorf("invalid request interval")
 	}

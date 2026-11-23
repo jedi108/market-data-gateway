@@ -12,7 +12,9 @@ import (
 // expiries of the same logical future therefore carry different UIDs and are
 // distinct series end to end: distinct cache entries, distinct SQLite series
 // rows, distinct coverage. Logical aliases exist only for request resolution
-// and never participate in Identity().
+// and never participate in Identity(). Diagnostic completeness and the
+// diagnostic-only flag are appended to labeled identities; unlabeled
+// identities retain the original five fields.
 type SeriesKey struct {
 	Venue, MarketType, ProviderInstrumentID, Timeframe, CandleType string
 	Completeness                                                   string `json:"completeness,omitempty"`

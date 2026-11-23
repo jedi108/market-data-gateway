@@ -212,6 +212,8 @@ Futures identity contract:
   never the logical alias: `model.SeriesKey` keys cache/SQLite by
   venue|market|UID|timeframe|candle, so different expiries are different series
   and a contract's history is never mixed with or rewritten by its successor.
+  Diagnostic series append `|completeness|diagnostic_only` in that fixed
+  order; unlabeled series retain the five-field identity.
   The storage schema version stays owned by the migration chain; the response
   envelope carries its own `schema_version`.
 - A logical alias (for example a rolling `GOLD` ticker) is a **resolution

@@ -16,6 +16,7 @@ const (
 	// intentionally distinct from provider availability: callers must not treat
 	// a partial response as a successful candle window.
 	CodeIncompleteCoverage  Code = "INCOMPLETE_COVERAGE"
+	CodeCoverageUnknown     Code = "COVERAGE_UNKNOWN"
 	CodeNodeUnauthenticated Code = "NODE_UNAUTHENTICATED"
 	// CodeUnsupportedCapability rejects a request outside the gateway's fixed
 	// capability boundary (F20): the TBank boundary is candles-only, so any
@@ -64,7 +65,7 @@ func (e *Error) HTTPStatus() int {
 		return 429
 	case CodeProviderUnauthenticated:
 		return 502
-	case CodeIncompleteCoverage:
+	case CodeIncompleteCoverage, CodeCoverageUnknown:
 		return 503
 	case CodeNodeUnauthenticated, CodeClusterMismatch, CodeUnknownNode:
 		return 403
