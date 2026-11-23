@@ -120,7 +120,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.candles(recorder, r)
 	case "/v1/candles/batch":
 		h.candlesBatch(recorder, r)
-	case "/metrics":
+	case "/metrics", "/v1/metrics":
 		h.serveMetrics(recorder, r)
 	default:
 		h.HealthHandler.ServeHTTP(recorder, r)

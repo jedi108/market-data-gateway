@@ -84,16 +84,18 @@ func TestGatewayHandlerExercisesCandleServiceAndMetrics(t *testing.T) {
 	if provider.calls.Load() != 1 {
 		t.Fatalf("provider calls=%d", provider.calls.Load())
 	}
-	metrics, err := http.Get(server.URL + "/metrics")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer metrics.Body.Close()
-	body := make([]byte, 4096)
-	n, _ := metrics.Body.Read(body)
-	metricsBody := string(body[:n])
-	if metrics.StatusCode != http.StatusOK || !strings.Contains(metricsBody, "gateway_cache_memory_hits_total") || !strings.Contains(metricsBody, "gateway_client_requests_total{client=\"loopback\",venue=\"tbank\",status=\"200\"} 2") || !strings.Contains(metricsBody, "gateway_cache_requests_total{venue=\"tbank\",timeframe=\"1m\",result=\"memory_hit\"} 1") {
-		t.Fatalf("metrics status=%d body=%q", metrics.StatusCode, body[:n])
+	for _, path := range []string{"/metrics", "/v1/metrics"} {
+		metrics, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := make([]byte, 4096)
+		n, _ := metrics.Body.Read(body)
+		metrics.Body.Close()
+		metricsBody := string(body[:n])
+		if metrics.StatusCode != http.StatusOK || !strings.Contains(metricsBody, "gateway_cache_memory_hits_total") || !strings.Contains(metricsBody, "gateway_client_requests_total{client=\"loopback\",venue=\"tbank\",status=\"200\"} 2") || !strings.Contains(metricsBody, "gateway_cache_requests_total{venue=\"tbank\",timeframe=\"1m\",result=\"memory_hit\"} 1") {
+			t.Fatalf("%s status=%d body=%q", path, metrics.StatusCode, body[:n])
+		}
 	}
 }
 
