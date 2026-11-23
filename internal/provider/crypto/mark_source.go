@@ -65,6 +65,7 @@ func (s *BinanceMarkSource) Fetch(ctx context.Context, key model.SeriesKey, from
 		return fail()
 	}
 	result := make([]model.Candle, 0, len(rows))
+	wanted := fromMS
 	previous := int64(-1)
 	now := s.now().UnixMilli()
 	for _, row := range rows {
@@ -73,10 +74,11 @@ func (s *BinanceMarkSource) Fetch(ctx context.Context, key model.SeriesKey, from
 		}
 		var open, closeMS int64
 		var o, h, l, c string
-		if json.Unmarshal(row[0], &open) != nil || json.Unmarshal(row[1], &o) != nil || json.Unmarshal(row[2], &h) != nil || json.Unmarshal(row[3], &l) != nil || json.Unmarshal(row[4], &c) != nil || json.Unmarshal(row[6], &closeMS) != nil || open < fromMS || open >= toMS || open <= previous || open > (1<<63-1)-step || closeMS != open+step-1 {
+		if json.Unmarshal(row[0], &open) != nil || json.Unmarshal(row[1], &o) != nil || json.Unmarshal(row[2], &h) != nil || json.Unmarshal(row[3], &l) != nil || json.Unmarshal(row[4], &c) != nil || json.Unmarshal(row[6], &closeMS) != nil || open != wanted || open >= toMS || open > (1<<63-1)-step || closeMS != open+step-1 {
 			return fail()
 		}
 		previous = open
+		wanted = open + step
 		candle := model.Candle{OpenTimeUTCMS: open, CloseTimeUTCMS: open + step, Open: o, High: h, Low: l, Close: c, Volume: "0", IsClosed: open+step <= now}
 		if err := candle.Validate(); err != nil {
 			return fail()

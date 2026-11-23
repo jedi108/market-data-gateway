@@ -14,7 +14,8 @@ type FundingAPIRate struct {
 }
 
 // ReconcileFunding compares a fully read, pinned archive window with a fully
-// paginated API window. Matching sources are diagnostic, not completeness proof.
+// API window that was not truncated by its single-page limit. Matching sources
+// are diagnostic, not completeness proof.
 // The caller must establish that both sources were read across [fromMS,toMS).
 func ReconcileFunding(archive []model.FundingEvent, api []FundingAPIRate, fromMS, toMS int64, sourcesRead bool) ([]model.FundingEvent, error) {
 	fail := func() ([]model.FundingEvent, error) {

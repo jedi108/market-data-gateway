@@ -27,7 +27,10 @@ func (k SeriesKey) Validate() error {
 			return fmt.Errorf("series key %s is required", name)
 		}
 	}
-	// TODO: Allow proven with diagnostic_only=false only with evidence of completeness.
+	if k.CandleType != "trade" && k.CandleType != "mark" && k.CandleType != "funding" {
+		return fmt.Errorf("invalid candle type")
+	}
+	// Proven non-diagnostic coverage requires evidence of completeness.
 	if k.CandleType == "funding" || k.CandleType == "mark" || k.Completeness != "" || k.DiagnosticOnly {
 		if (k.Completeness != "reconciled" && k.Completeness != "unknown") || !k.DiagnosticOnly || (k.CandleType != "funding" && k.CandleType != "mark") || k.Venue != "binance" || k.MarketType != "futures" || len(k.ProviderInstrumentID) <= len("USDT") || !strings.HasSuffix(k.ProviderInstrumentID, "USDT") || strings.Trim(k.ProviderInstrumentID, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != "" {
 			return fmt.Errorf("invalid diagnostic series labels")

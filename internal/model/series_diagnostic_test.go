@@ -86,3 +86,10 @@ func TestDiagnosticSeriesRequiresBinanceFutures(t *testing.T) {
 		}
 	}
 }
+
+func TestSeriesKeyRejectsUnknownCandleType(t *testing.T) {
+	key := SeriesKey{Venue: "binance", MarketType: "spot", ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: "markk"}
+	if err := key.Validate(); err == nil {
+		t.Fatal("unknown candle type accepted")
+	}
+}
