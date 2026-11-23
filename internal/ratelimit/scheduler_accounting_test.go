@@ -249,3 +249,33 @@ func TestSchedulerBudgetBoundsConcurrentBurst(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRequireScheduledAttemptCompatibility(t *testing.T) {
+	if err := RequireScheduledAttempt(context.Background()); err == nil {
+		t.Fatal("unscheduled context accepted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RequireScheduledAttempt(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context: %v", err)
+	}
+	s := NewScheduler(accountingConfig(3, 0, time.Second))
+	defer shutdownTestScheduler(t, s)
+	for _, guard := range []bool{false, true} {
+		result, err := s.Submit(context.Background(), "client", PriorityLiveRefresh, func(ctx context.Context) error {
+			if guard {
+				return RequireScheduledAttempt(ctx)
+			}
+			return nil // Existing callers need not invoke the guard.
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.Snapshot().NodeBudgetUsed; got != 2 {
+		t.Fatalf("used=%d, want 2", got)
+	}
+}

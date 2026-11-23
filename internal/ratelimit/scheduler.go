@@ -334,6 +334,17 @@ func (s *Scheduler) popLocked() job {
 
 type additionalAttemptKey struct{}
 
+// RequireScheduledAttempt ensures the first upstream request has a scheduler reservation.
+func RequireScheduledAttempt(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := ctx.Value(additionalAttemptKey{}).(func() error); !ok {
+		return errors.New("provider attempt outside scheduler")
+	}
+	return nil
+}
+
 // ChargeAdditionalAttempt reserves budget for an additional upstream request
 // made by the current scheduled operation. The first request is already charged
 // by Submit; callers must invoke this immediately before each later request.
