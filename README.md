@@ -28,6 +28,10 @@ both the pinned archive and matching API observations; missing pins, conflicting
 sources, an empty window, or an over-limit result fail closed. Reconciliation is
 diagnostic agreement, **not proof of completeness**. The 8h series identity
 is not a claim that every event's interval is 8h; use each event's `interval_h`.
+Cached coverage is recorded for a reconciled request range; non-empty subwindows
+can reuse it without a separate reconciliation and do not prove completeness.
+When a pin is available, upstream egress uses `data.binance.vision` and
+`fapi.binance.com`.
 Diagnostic mode does not serve spot trade candles; fake mode remains unchanged.
 Non-owner funding peer transport and mark GET are not implemented and fail
 closed. No live availability is inferred from the historical payment time.

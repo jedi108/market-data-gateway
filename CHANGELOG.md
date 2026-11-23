@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — docs(gateway): clarify diagnostic coverage (refs #1048)
+
+- Document range-level cached reconciliation and diagnostic upstream destinations.
+
 ## 2026-11-23 — fix(gateway): report funding retention (refs #1048)
 
 - Include funding event counts before, after, and deleted in cleanup reports.
