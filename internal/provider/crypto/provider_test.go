@@ -192,7 +192,7 @@ func TestProviderRefusesNonTradeCandlesWithoutFetching(t *testing.T) {
 	p := New(fetcher, testRegistry(t))
 	for _, candleType := range []string{"mark", "funding"} {
 		t.Run(candleType, func(t *testing.T) {
-			req := model.CandleRequest{Series: model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: candleType}}
+			req := model.CandleRequest{Series: model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: candleType, Completeness: "reconciled", DiagnosticOnly: true}}
 			_, _, err := p.FetchCandles(context.Background(), req)
 			ae, ok := err.(*apperror.Error)
 			if !ok || ae.Code != apperror.CodeUnsupportedCapability {

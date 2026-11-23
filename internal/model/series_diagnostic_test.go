@@ -29,6 +29,8 @@ func TestDiagnosticSeriesIdentityAndMetadata(t *testing.T) {
 		t.Fatalf("missing labels: %s", data)
 	}
 	for _, invalid := range []SeriesKey{
+		{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: "funding"},
+		{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: "mark"},
 		{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: "funding", Completeness: "reconciled"},
 		{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: "funding", DiagnosticOnly: true},
 		{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: "trade", Completeness: "unknown", DiagnosticOnly: true},
@@ -36,6 +38,15 @@ func TestDiagnosticSeriesIdentityAndMetadata(t *testing.T) {
 	} {
 		if invalid.Validate() == nil {
 			t.Fatalf("accepted invalid labels: %+v", invalid)
+		}
+	}
+}
+
+func TestUnlabeledTradeSeriesRemainValid(t *testing.T) {
+	for _, market := range []string{"spot", "futures"} {
+		key := SeriesKey{Venue: "binance", MarketType: market, ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: "trade"}
+		if err := key.Validate(); err != nil {
+			t.Fatalf("%s trade: %v", market, err)
 		}
 	}
 }

@@ -27,7 +27,7 @@ func (k SeriesKey) Validate() error {
 			return fmt.Errorf("series key %s is required", name)
 		}
 	}
-	if k.Completeness != "" || k.DiagnosticOnly {
+	if k.CandleType == "funding" || k.CandleType == "mark" || k.Completeness != "" || k.DiagnosticOnly {
 		if (k.Completeness != "reconciled" && k.Completeness != "unknown") || !k.DiagnosticOnly || (k.CandleType != "funding" && k.CandleType != "mark") {
 			return fmt.Errorf("invalid diagnostic series labels")
 		}

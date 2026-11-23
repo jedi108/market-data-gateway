@@ -153,7 +153,20 @@ func TestDiagnosticSeriesHTTPEnvelopeAndUnknownCoverage(t *testing.T) {
 	if len(batch) != 1 || !errors.As(batch[0].Error, &typed) || typed.Code != apperror.CodeCoverageUnknown {
 		t.Fatalf("unknown batch: %+v", batch)
 	}
+	for _, candleType := range []string{"funding", "mark"} {
+		unlabeled := req
+		unlabeled.Series.CandleType = candleType
+		unlabeled.Series.Completeness = ""
+		unlabeled.Series.DiagnosticOnly = false
+		if _, err := svc.Get(context.Background(), "test", ratelimit.Priority(0), unlabeled); err == nil {
+			t.Fatalf("unlabeled %s accepted by Get", candleType)
+		}
+		items := svc.GetBatch(context.Background(), "test", ratelimit.Priority(0), []model.CandleRequest{unlabeled}, service.BatchOptions{})
+		if len(items) != 1 || items[0].Error == nil {
+			t.Fatalf("unlabeled %s accepted by GetBatch: %+v", candleType, items)
+		}
+	}
 	if provider.calls.Load() != 1 {
-		t.Fatalf("unknown coverage reached provider: calls=%d", provider.calls.Load())
+		t.Fatalf("invalid or unknown coverage reached provider: calls=%d", provider.calls.Load())
 	}
 }
