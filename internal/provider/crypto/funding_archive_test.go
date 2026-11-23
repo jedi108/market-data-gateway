@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"github.com/jedi108/market-data-gateway/internal/apperror"
 	"strings"
 	"testing"
 )
@@ -45,7 +47,12 @@ func TestParseFundingArchive(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d, c, s := fundingFixture(t, tt.member, tt.body)
-			if _, err := ParseFundingArchive(d, c, s, "BTCUSDT", "2024-01"); err == nil {
+			if _, err := ParseFundingArchive(d, c, s, "BTCUSDT", "2024-01"); err != nil {
+				var typed *apperror.Error
+				if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown {
+					t.Fatalf("expected typed coverage error, got %v", err)
+				}
+			} else {
 				t.Fatal("expected refusal")
 			}
 		})

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"math/big"
 	"regexp"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jedi108/market-data-gateway/internal/apperror"
 	"github.com/jedi108/market-data-gateway/internal/model"
 )
 
@@ -23,7 +23,7 @@ var fundingRatePattern = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
 // Verified rows confirm their own intervals only, never coverage of a range.
 func ParseFundingArchive(data []byte, checksum, pinnedSHA, symbol, month string) ([]model.FundingEvent, error) {
 	fail := func(reason string) ([]model.FundingEvent, error) {
-		return nil, fmt.Errorf("funding_missing: %s", reason)
+		return nil, apperror.New(apperror.CodeCoverageUnknown, "funding archive: "+reason, 0)
 	}
 	if symbol == "" || strings.Trim(symbol, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != "" || !strings.HasSuffix(symbol, "USDT") {
 		return fail("invalid Binance USD-M symbol")

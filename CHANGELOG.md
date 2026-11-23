@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — fix(gateway): type funding archive failures (refs #1048)
+
+- Return typed coverage-unknown errors for rejected funding archives and assert typed service guards.
+
 ## 2026-11-23 — fix(gateway): guard diagnostic routing (refs #1048)
 
 - Reject mismatched candle identities, report funding upstream operations separately, and test diagnostic spot fail-closed behavior.

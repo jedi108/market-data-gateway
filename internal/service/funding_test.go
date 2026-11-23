@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"github.com/jedi108/market-data-gateway/internal/apperror"
 	"github.com/jedi108/market-data-gateway/internal/cache"
 	"github.com/jedi108/market-data-gateway/internal/model"
 	"github.com/jedi108/market-data-gateway/internal/ratelimit"
@@ -52,7 +54,7 @@ func TestFundingReconciledServiceCacheAndRestart(t *testing.T) {
 	}
 }
 
-func TestFundingIncompleteWindowNeverUsesStaleSnapshot(t *testing.T) {
+func TestFundingUnavailableProviderNeverUsesPartialSnapshot(t *testing.T) {
 	path := t.TempDir() + "/cache.db"
 	source := &fundingProvider{}
 	store, err := storage.Open(path)
@@ -97,8 +99,9 @@ func TestFundingCachedResultOverLimitFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = svc.Get(context.Background(), "test", ratelimit.PriorityLiveRefresh, model.CandleRequest{Series: key, FromUTCMS: 100, ToUTCMS: 200, Limit: 1})
-	if err == nil {
-		t.Fatal("over-limit funding accepted")
+	var typed *apperror.Error
+	if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown {
+		t.Fatalf("expected coverage error, got %v", err)
 	}
 	if source.calls != 0 {
 		t.Fatal("cached limit rejection reached provider")
@@ -128,7 +131,12 @@ func TestFundingCachedEmptySubwindowFailsClosed(t *testing.T) {
 	}
 	request := model.CandleRequest{Series: key, FromUTCMS: 150, ToUTCMS: 200, Limit: 10}
 	for i := 0; i < 2; i++ {
-		if result, err := svc.Get(context.Background(), "test", ratelimit.PriorityLiveRefresh, request); err == nil {
+		if result, err := svc.Get(context.Background(), "test", ratelimit.PriorityLiveRefresh, request); err != nil {
+			var typed *apperror.Error
+			if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown {
+				t.Fatalf("expected coverage error, got %v", err)
+			}
+		} else {
 			t.Fatalf("empty cached subwindow accepted: %+v", result)
 		}
 	}
