@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jedi108/market-data-gateway/internal/apperror"
 	"github.com/jedi108/market-data-gateway/internal/model"
 	"github.com/jedi108/market-data-gateway/internal/ratelimit"
 )
@@ -40,6 +42,8 @@ func TestReconciledMarkSourceRangeAndFailures(t *testing.T) {
 		{"wrong checksum", true, "bad", `[]`, 1704067200000, 1704070800000, 2, false},
 		{"missing pin", false, checksum, `[]`, 1704067200000, 1704070800000, 0, false},
 		{"partial candle", true, checksum, `[]`, 1704067200001, 1704070800000, 0, false},
+		{"cross month", true, checksum, `[]`, 1706742000000, 1706749200000, 0, false},
+		{"empty API", true, checksum, `[]`, 1704067200000, 1704070800000, 3, false},
 		{"missing range candle", true, checksum, `[]`, 1704067200000, 1704074400000, 2, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,8 +73,11 @@ func TestReconciledMarkSourceRangeAndFailures(t *testing.T) {
 				if tc.success && (err != nil || len(rows) != 1) {
 					return fmt.Errorf("rows=%v error=%v", rows, err)
 				}
-				if !tc.success && err == nil {
-					return fmt.Errorf("accepted")
+				if !tc.success {
+					var typed *apperror.Error
+					if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown || typed.Retryable {
+						return fmt.Errorf("expected non-retryable COVERAGE_UNKNOWN, got %v", err)
+					}
 				}
 				return nil
 			})
@@ -82,6 +89,10 @@ func TestReconciledMarkSourceRangeAndFailures(t *testing.T) {
 			}
 			if calls.Load() != tc.calls {
 				t.Fatalf("calls=%d expected=%d", calls.Load(), tc.calls)
+			}
+			// The scheduler charges the initial submission even if validation rejects before HTTP.
+			if tc.calls > 0 && sched.Snapshot().NodeBudgetUsed != int(tc.calls) {
+				t.Fatalf("calls=%d budget=%d", tc.calls, sched.Snapshot().NodeBudgetUsed)
 			}
 		})
 	}
