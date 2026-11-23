@@ -35,15 +35,16 @@ type Snapshot struct {
 // Counts are collected inside the same write transaction as the deletion so
 // an operator can compare logical row retention before and after the pass.
 type CleanupStats struct {
-	CandlesBefore   int64
-	CandlesAfter    int64
-	CoverageBefore  int64
-	CoverageAfter   int64
-	DeletedCandles  int64
-	DeletedCoverage int64
-	TrimmedCoverage int64
-	RemainingSeries int64
-	Checkpoint      WALCheckpoint
+	CandlesBefore        int64
+	CandlesAfter         int64
+	CoverageBefore       int64
+	CoverageAfter        int64
+	DeletedCandles       int64
+	DeletedFundingEvents int64
+	DeletedCoverage      int64
+	TrimmedCoverage      int64
+	RemainingSeries      int64
+	Checkpoint           WALCheckpoint
 }
 
 // WALCheckpoint reports the result of PRAGMA wal_checkpoint(PASSIVE). A busy
@@ -415,6 +416,16 @@ func (s *Store) CleanupBeforeWithStats(cutoffUTCMS int64) (CleanupStats, error) 
 	stats.DeletedCandles, err = result.RowsAffected()
 	if err != nil {
 		return stats, fmt.Errorf("count deleted candles: %w", err)
+	}
+
+	result, err = conn.ExecContext(ctx, `DELETE FROM funding_events AS old
+        WHERE old.ts < ? AND old.ts < (SELECT MAX(current.ts) FROM funding_events AS current WHERE current.series_id = old.series_id)`, cutoffUTCMS)
+	if err != nil {
+		return stats, fmt.Errorf("delete expired funding events: %w", err)
+	}
+	stats.DeletedFundingEvents, err = result.RowsAffected()
+	if err != nil {
+		return stats, fmt.Errorf("count deleted funding events: %w", err)
 	}
 
 	// Read coverage rows first, then mutate them after closing the cursor. The

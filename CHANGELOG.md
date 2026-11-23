@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — fix(storage): retain funding events within cleanup horizon (refs #1048)
+
+- Apply SQLite retention to funding events while preserving the latest event per series and trimming coverage as before.
+
 ## 2026-11-23 — test(gateway): verify diagnostic funding bounds (refs #1048)
 
 - Document the diagnostic GET restrictions and test identity and cached result limits.
