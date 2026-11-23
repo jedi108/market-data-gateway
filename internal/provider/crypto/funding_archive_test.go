@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,25 @@ func TestParseFundingArchive(t *testing.T) {
 			}
 		})
 	}
+	t.Run("member CRC", func(t *testing.T) {
+		corrupt := append([]byte(nil), data...)
+		central := bytes.Index(corrupt, []byte{'P', 'K', 1, 2})
+		if central < 0 {
+			t.Fatal("central directory not found")
+		}
+		corrupt[central+16] ^= 0xff
+		hash := sha256.Sum256(corrupt)
+		pin := hex.EncodeToString(hash[:])
+		if _, err := ParseFundingArchive(corrupt, pin+"  BTCUSDT-fundingRate-2024-01.zip", pin, "BTCUSDT", "2024-01"); err == nil {
+			t.Fatal("expected CRC refusal")
+		}
+	})
+	t.Run("oversized member", func(t *testing.T) {
+		d, c, s := fundingFixture(t, member, header+strings.Repeat(" ", 1<<20))
+		if _, err := ParseFundingArchive(d, c, s, "BTCUSDT", "2024-01"); err == nil {
+			t.Fatal("expected size refusal")
+		}
+	})
 	if _, err = ParseFundingArchive(data, checksum, "bad", "BTCUSDT", "2024-01"); err == nil {
 		t.Fatal("expected pin refusal")
 	}

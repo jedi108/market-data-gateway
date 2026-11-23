@@ -52,7 +52,11 @@ func ParseFundingArchive(data []byte, checksum, pinnedSHA, symbol, month string)
 		return fail("cannot open archive member")
 	}
 	defer r.Close()
-	csvr := csv.NewReader(io.LimitReader(r, 1<<20+1))
+	contents, err := io.ReadAll(io.LimitReader(r, 1<<20+1))
+	if err != nil || len(contents) > 1<<20 {
+		return fail("invalid or oversized archive member")
+	}
+	csvr := csv.NewReader(bytes.NewReader(contents))
 	header, err := csvr.Read()
 	if err != nil || strings.Join(header, ",") != "calc_time,funding_interval_hours,last_funding_rate" {
 		return fail("invalid archive schema")

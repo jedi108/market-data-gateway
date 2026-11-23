@@ -158,12 +158,13 @@ func TestDiagnosticSeriesHTTPEnvelopeAndUnknownCoverage(t *testing.T) {
 		unlabeled.Series.CandleType = candleType
 		unlabeled.Series.Completeness = ""
 		unlabeled.Series.DiagnosticOnly = false
-		if _, err := svc.Get(context.Background(), "test", ratelimit.Priority(0), unlabeled); err == nil {
-			t.Fatalf("unlabeled %s accepted by Get", candleType)
+		_, err := svc.Get(context.Background(), "test", ratelimit.Priority(0), unlabeled)
+		if !errors.As(err, &typed) || typed.Code != apperror.CodeInvalidRequest {
+			t.Fatalf("unlabeled %s Get error: %v", candleType, err)
 		}
 		items := svc.GetBatch(context.Background(), "test", ratelimit.Priority(0), []model.CandleRequest{unlabeled}, service.BatchOptions{})
-		if len(items) != 1 || items[0].Error == nil {
-			t.Fatalf("unlabeled %s accepted by GetBatch: %+v", candleType, items)
+		if len(items) != 1 || !errors.As(items[0].Error, &typed) || typed.Code != apperror.CodeInvalidRequest {
+			t.Fatalf("unlabeled %s GetBatch: %+v", candleType, items)
 		}
 	}
 	if provider.calls.Load() != 1 {

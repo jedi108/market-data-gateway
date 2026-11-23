@@ -253,7 +253,7 @@ func (s *Service) GetOwnedBatch(requests []model.CandleRequest) []cluster.OwnedB
 // A series owned by a remote node is served through one bounded peer hop.
 func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.Priority, request model.CandleRequest) (Result, error) {
 	if err := request.Series.Validate(); err != nil {
-		return Result{}, err
+		return Result{}, apperror.New(apperror.CodeInvalidRequest, err.Error(), 0)
 	}
 	if request.Series.Completeness == "unknown" {
 		return Result{}, apperror.New(apperror.CodeCoverageUnknown, "series coverage is unknown", 0)

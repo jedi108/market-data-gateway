@@ -27,6 +27,7 @@ func (k SeriesKey) Validate() error {
 			return fmt.Errorf("series key %s is required", name)
 		}
 	}
+	// TODO: Allow proven with diagnostic_only=false only with evidence of completeness.
 	if k.CandleType == "funding" || k.CandleType == "mark" || k.Completeness != "" || k.DiagnosticOnly {
 		if (k.Completeness != "reconciled" && k.Completeness != "unknown") || !k.DiagnosticOnly || (k.CandleType != "funding" && k.CandleType != "mark") || k.Venue != "binance" || k.MarketType != "futures" {
 			return fmt.Errorf("invalid diagnostic series labels")
