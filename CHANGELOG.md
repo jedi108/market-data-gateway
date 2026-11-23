@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — test(gateway): verify funding HTTP metadata and spot (refs #1048)
+
+- Exercise reconciled archive/API fixtures through GET and cache for 4h/8h payment availability; preserve fake-mode Binance spot trade coverage.
+
 ## 2026-11-23 — fix(gateway): fail closed for funding edge cases (refs #1048)
 
 - Require the explicit BTC/USDT:USDT futures symbol; reject empty cached funding windows and peer funding transport, and verify 4h/8h HTTP event metadata.
