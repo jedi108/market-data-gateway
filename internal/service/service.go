@@ -341,6 +341,10 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 		var upstream *upstreamFailure
 		if errors.As(refreshErr, &upstream) {
 			s.noteEpochOutcome(request.Series, upstream.err)
+			var typed *apperror.Error
+			if request.Series.DiagnosticOnly && errors.As(upstream.err, &typed) && typed.Code == apperror.CodeCoverageUnknown {
+				return Result{}, upstream.err
+			}
 			return s.staleOrError(request, upstream.err)
 		}
 		// Task 109: admission rejection degrades to the honest stale/fail-
@@ -576,6 +580,9 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 			return &upstreamFailure{err: err}
 		}
 		if len(candles) == 0 {
+			if request.Series.DiagnosticOnly {
+				return &upstreamFailure{err: apperror.New(apperror.CodeCoverageUnknown, "empty diagnostic source window", 0)}
+			}
 			// The provider answered OK with no candles for this range. For
 			// session-traded venues that is a permanent fact (market closed),
 			// and without marking it the same empty ranges are re-fetched on

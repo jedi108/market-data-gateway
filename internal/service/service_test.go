@@ -460,3 +460,23 @@ func TestJoinerWithAnotherWindowRunsItsOwnFlight(t *testing.T) {
 		t.Fatalf("joins=%d calls=%d", svc.Metrics().SingleflightJoins, upstream.calls)
 	}
 }
+
+func TestDiagnosticEmptyRangeDoesNotBecomeCoverageOrStaleSuccess(t *testing.T) {
+	upstream := gapProvider()
+	svc, store, scheduler := newService(t, t.TempDir()+"/cache.sqlite", upstream)
+	defer closeService(t, store, scheduler)
+	req := request(0, 180)
+	req.Series = model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1m", CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}
+	if _, err := svc.Get(context.Background(), "diagnostic", ratelimit.PriorityLiveRefresh, req); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.Get(context.Background(), "diagnostic", ratelimit.PriorityLiveRefresh, req)
+	var typed *apperror.Error
+	if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown {
+		t.Fatalf("expected coverage unknown, got %v", err)
+	}
+	lookup, err := svc.cache.Lookup(req.Series, cache.Range{FromUTCMS: 0, ToUTCMS: 180})
+	if err != nil || lookup.Complete {
+		t.Fatalf("empty diagnostic gap became covered: %+v, %v", lookup, err)
+	}
+}
