@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — feat(gateway): expose diagnostic mark GET (refs #1048)
+
+- Route pinned reconciled Binance mark windows through scheduled HTTP, cache and storage with fail-closed diagnostic identity.
+
 ## 2026-11-23 — docs(gateway): clarify diagnostic coverage (refs #1048)
 
 - Document range-level cached reconciliation and diagnostic upstream destinations.

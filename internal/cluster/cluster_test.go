@@ -31,8 +31,12 @@ type countingProvider struct{ calls atomic.Int64 }
 func (p *countingProvider) FetchCandles(ctx context.Context, r model.CandleRequest) ([]model.Candle, model.ProviderMetadata, error) {
 	p.calls.Add(1)
 	var candles []model.Candle
-	for open := r.FromUTCMS; open < r.ToUTCMS; open += 60_000 {
-		candles = append(candles, model.Candle{OpenTimeUTCMS: open, CloseTimeUTCMS: open + 60_000, Open: "100", High: "101", Low: "99", Close: "100", Volume: "10", IsClosed: true})
+	step := int64(60_000)
+	if r.Series.CandleType == "mark" {
+		step = 3_600_000
+	}
+	for open := r.FromUTCMS; open < r.ToUTCMS; open += step {
+		candles = append(candles, model.Candle{OpenTimeUTCMS: open, CloseTimeUTCMS: open + step, Open: "100", High: "101", Low: "99", Close: "100", Volume: "10", IsClosed: true})
 	}
 	return candles, model.ProviderMetadata{Status: "fake"}, nil
 }
@@ -710,7 +714,7 @@ func TestPeerForwardsDiagnosticMarkSeries(t *testing.T) {
 	tc := newTestCluster(t, 1)
 	var key model.SeriesKey
 	for i := 0; i < 10000; i++ {
-		candidate := model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: fmt.Sprintf("BTC%dUSDT", i), Timeframe: "1m", CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}
+		candidate := model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: fmt.Sprintf("BTC%dUSDT", i), Timeframe: "1h", CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}
 		assignment, err := tc.nodes["node-a"].member.Table().Assign(candidate)
 		if err != nil {
 			t.Fatal(err)
@@ -723,7 +727,9 @@ func TestPeerForwardsDiagnosticMarkSeries(t *testing.T) {
 	if key.ProviderInstrumentID == "" {
 		t.Fatal("no node-a key found")
 	}
-	result, err := tc.nodes["node-b"].svc.Get(context.Background(), "client", ratelimit.PriorityLiveRefresh, requestFor(key))
+	req := requestFor(key)
+	req.ToUTCMS = 7200000
+	result, err := tc.nodes["node-b"].svc.Get(context.Background(), "client", ratelimit.PriorityLiveRefresh, req)
 	if err != nil {
 		t.Fatal(err)
 	}

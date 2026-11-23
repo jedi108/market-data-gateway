@@ -25,6 +25,18 @@ func TestDiagnosticFundingResolverLimitsContract(t *testing.T) {
 	}
 }
 
+func TestDiagnosticMarkResolverLimitsContract(t *testing.T) {
+	key, err := diagnosticMarkResolver("binance", "BTC/USDT:USDT", "1h")
+	if err != nil || key.ProviderInstrumentID != "BTCUSDT" || key.MarketType != "futures" || key.CandleType != "mark" || key.Completeness != "reconciled" || !key.DiagnosticOnly {
+		t.Fatalf("%+v %v", key, err)
+	}
+	for _, input := range [][3]string{{"binance", "BTC/USDT", "1h"}, {"bybit", "BTC/USDT:USDT", "1h"}, {"binance", "ETH/USDT:USDT", "1h"}, {"binance", "BTC/USDT:USDT", "8h"}} {
+		if _, err := diagnosticMarkResolver(input[0], input[1], input[2]); err == nil {
+			t.Fatalf("unexpected resolution %v", input)
+		}
+	}
+}
+
 func TestFakeCryptoModeKeepsBinanceSpotTrade(t *testing.T) {
 	key, err := resolver(nil)("binance", "BTC/USDT", "1h")
 	if err != nil || key.MarketType != "spot" || key.CandleType != "trade" {

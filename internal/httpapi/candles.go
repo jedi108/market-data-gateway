@@ -58,11 +58,17 @@ func WithFundingResolver(fn Resolver) HandlerOption {
 	return func(h *GatewayHandler) { h.resolveFunding = fn }
 }
 
+// WithMarkResolver enables explicitly registered diagnostic mark identities.
+func WithMarkResolver(fn Resolver) HandlerOption {
+	return func(h *GatewayHandler) { h.resolveMark = fn }
+}
+
 type GatewayHandler struct {
 	*HealthHandler
 	service        *service.Service
 	resolve        Resolver
 	resolveFunding Resolver
+	resolveMark    Resolver
 	maxLimit       int
 	maxBatchItems  int
 	batchFanOut    int
@@ -315,7 +321,7 @@ func (h *GatewayHandler) recordSeriesObservability(key model.SeriesKey, result s
 func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
 	query := r.URL.Query()
 	for _, candleType := range query["candle_type"] {
-		if candleType != "trade" && !(candleType == "funding" && h.resolveFunding != nil) {
+		if candleType != "trade" && !(candleType == "funding" && h.resolveFunding != nil) && !(candleType == "mark" && h.resolveMark != nil) {
 			return model.CandleRequest{}, apperror.New(apperror.CodeUnsupportedCapability, "requested candle type is not available", 0)
 		}
 	}
@@ -323,8 +329,10 @@ func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
 		return model.CandleRequest{}, apperror.New(apperror.CodeUnsupportedCapability, "ambiguous candle type", 0)
 	}
 	funding := query.Get("candle_type") == "funding"
-	if funding && (len(query["completeness"]) != 1 || query.Get("completeness") != "reconciled" || len(query["diagnostic_only"]) != 1 || query.Get("diagnostic_only") != "true") {
-		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "funding requires reconciled diagnostic coverage", 0)
+	mark := query.Get("candle_type") == "mark"
+	diagnostic := funding || mark
+	if diagnostic && (len(query["completeness"]) != 1 || query.Get("completeness") != "reconciled" || len(query["diagnostic_only"]) != 1 || query.Get("diagnostic_only") != "true") {
+		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "diagnostic requires reconciled coverage", 0)
 	}
 	venue, symbol, timeframe := query.Get("venue"), query.Get("symbol"), query.Get("timeframe")
 	if venue == "" || symbol == "" || timeframe == "" {
@@ -349,22 +357,25 @@ func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
 	if err != nil {
 		return model.CandleRequest{}, apperror.New(apperror.CodeInvalidRequest, "include_incomplete must be true or false", 0)
 	}
-	if funding && includeIncomplete {
-		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "forming funding unavailable", 0)
+	if diagnostic && includeIncomplete {
+		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "forming diagnostic unavailable", 0)
 	}
 	resolve := h.resolve
 	if funding {
 		resolve = h.resolveFunding
 	}
+	if mark {
+		resolve = h.resolveMark
+	}
 	key, err := resolve(venue, symbol, timeframe)
 	if err != nil {
 		return model.CandleRequest{}, err
 	}
-	if !funding && key.CandleType != "trade" {
+	if !diagnostic && key.CandleType != "trade" {
 		return model.CandleRequest{}, apperror.New(apperror.CodeUnsupportedCapability, "resolved candle type does not match request", 0)
 	}
-	if funding && (key.Validate() != nil || key.CandleType != "funding" || key.Completeness != "reconciled" || !key.DiagnosticOnly) {
-		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "funding identity unavailable", 0)
+	if diagnostic && (key.Validate() != nil || key.CandleType != query.Get("candle_type") || key.Completeness != "reconciled" || !key.DiagnosticOnly) {
+		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "diagnostic identity unavailable", 0)
 	}
 	return model.CandleRequest{Series: key, FromUTCMS: from, ToUTCMS: to, Limit: limit, IncludeIncomplete: includeIncomplete}, nil
 }

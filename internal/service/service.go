@@ -215,7 +215,7 @@ func (s *Service) Stop() {
 // configured request timeout so a dead source node cannot pin resources.
 func (s *Service) GetOwned(request model.CandleRequest) (cluster.OwnedResult, error) {
 	if request.Series.CandleType == "funding" {
-		return cluster.OwnedResult{}, apperror.New(apperror.CodeCoverageUnknown, "peer funding transport unavailable", 0)
+		return cluster.OwnedResult{}, apperror.New(apperror.CodeCoverageUnknown, "peer diagnostic transport unavailable", 0)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
 	defer cancel()
@@ -269,6 +269,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 		return Result{}, fmt.Errorf("request limit must be positive")
 	}
 
+	if request.Series.CandleType == "mark" && (request.Series.Timeframe != "1h" || request.IncludeIncomplete || request.FromUTCMS%3600000 != 0 || request.ToUTCMS%3600000 != 0 || (request.ToUTCMS-request.FromUTCMS)/3600000 > int64(request.Limit) || request.Limit > 1000 || time.UnixMilli(request.FromUTCMS).UTC().Format("2006-01") != time.UnixMilli(request.ToUTCMS-1).UTC().Format("2006-01")) {
+		return Result{}, apperror.New(apperror.CodeCoverageUnknown, "mark source window unavailable", 0)
+	}
 	requested := cache.Range{FromUTCMS: request.FromUTCMS, ToUTCMS: request.ToUTCMS}
 	memory, err := s.cache.Lookup(request.Series, requested)
 	if err != nil {
@@ -315,7 +318,7 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 		}
 		if !local {
 			if request.Series.CandleType == "funding" {
-				return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding peer transport unavailable", 0)
+				return Result{}, apperror.New(apperror.CodeCoverageUnknown, "diagnostic peer transport unavailable", 0)
 			}
 			return s.peerFetch(ctx, request, requested)
 		}
@@ -393,6 +396,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	// is representation, not a coverage failure (task 109).
 	memory = s.epochAwareLookup(request.Series, requested, memory)
 	if !memory.Complete {
+		if request.Series.DiagnosticOnly {
+			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "diagnostic coverage incomplete", 0)
+		}
 		if len(memory.Entry.Candles) > 0 {
 			// A successful provider call may legitimately contain permanent
 			// gaps: session-traded venues (MOEX shares) produce no candles
@@ -447,6 +453,9 @@ func (s *Service) peerFetch(ctx context.Context, request model.CandleRequest, re
 			s.logWarn("peer fetch to owner failed", request.Series, "reason", peerFailure(err))
 			return err
 		}
+		if request.Series.CandleType == "mark" && !completeMarkWindow(response.Candles, requested) {
+			return apperror.New(apperror.CodeCoverageUnknown, "partial mark peer window", 0)
+		}
 		if len(response.Candles) == 0 {
 			return nil
 		}
@@ -471,6 +480,9 @@ func (s *Service) peerFetch(ctx context.Context, request model.CandleRequest, re
 	if err != nil {
 		// A typed peer failure never degrades into a provider call; the
 		// stale-replica path below is the only fallback.
+		if request.Series.DiagnosticOnly {
+			return Result{}, err
+		}
 		if cluster.IsPeerError(err) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return s.staleReplicaOrError(request, err)
 		}
@@ -571,7 +583,7 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 		// forming candle are never fetched, so one provider refresh per
 		// series per epoch covers the closed bars.
 		fetchRange, ok := s.trimFetchRangeToEpoch(request.Series, missing)
-		if request.Series.CandleType == "funding" {
+		if request.Series.DiagnosticOnly {
 			fetchRange, ok = missing, true
 		}
 		if !ok {
@@ -673,6 +685,9 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 			}
 			continue
 		}
+		if request.Series.CandleType == "mark" && !completeMarkWindow(candles, fetchRange) {
+			return &upstreamFailure{err: apperror.New(apperror.CodeCoverageUnknown, "partial mark source window", 0)}
+		}
 		hasRealCandles = true
 		coverage := candleCoverage(candles)
 		for index := range candles {
@@ -703,7 +718,21 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 	return nil
 }
 
+func completeMarkWindow(candles []model.Candle, window cache.Range) bool {
+	expected := window.FromUTCMS
+	for _, candle := range candles {
+		if candle.OpenTimeUTCMS != expected || candle.CloseTimeUTCMS != expected+3600000 || !candle.IsClosed {
+			return false
+		}
+		expected = candle.CloseTimeUTCMS
+	}
+	return expected == window.ToUTCMS
+}
+
 func (s *Service) staleOrError(request model.CandleRequest, upstreamErr error) (Result, error) {
+	if request.Series.DiagnosticOnly {
+		return Result{}, upstreamErr
+	}
 	snapshot, allowed, err := s.store.StaleIfUpstreamError(request.Series, request.FromUTCMS, request.ToUTCMS, s.now().UnixMilli(), s.cfg.MaxStaleAge.Milliseconds(), upstreamErr)
 	if err != nil {
 		return Result{}, err
@@ -874,7 +903,7 @@ func (s *Service) epochLastErr(key model.SeriesKey) error {
 // candles still cover the full requested window, so include_incomplete
 // clients keep their cached live edge row (task 109).
 func (s *Service) epochAwareLookup(key model.SeriesKey, requested cache.Range, full cache.LookupResult) cache.LookupResult {
-	if key.CandleType == "funding" {
+	if key.DiagnosticOnly {
 		return full
 	}
 	step, ok := stepForTimeframe(key.Timeframe)

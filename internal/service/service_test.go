@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -462,21 +463,29 @@ func TestJoinerWithAnotherWindowRunsItsOwnFlight(t *testing.T) {
 }
 
 func TestDiagnosticEmptyRangeDoesNotBecomeCoverageOrStaleSuccess(t *testing.T) {
-	upstream := gapProvider()
-	svc, store, scheduler := newService(t, t.TempDir()+"/cache.sqlite", upstream)
-	defer closeService(t, store, scheduler)
-	req := request(0, 180)
-	req.Series = model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1m", CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}
-	if _, err := svc.Get(context.Background(), "diagnostic", ratelimit.PriorityLiveRefresh, req); err != nil {
-		t.Fatal(err)
-	}
-	_, err := svc.Get(context.Background(), "diagnostic", ratelimit.PriorityLiveRefresh, req)
-	var typed *apperror.Error
-	if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown {
-		t.Fatalf("expected coverage unknown, got %v", err)
-	}
-	lookup, err := svc.cache.Lookup(req.Series, cache.Range{FromUTCMS: 0, ToUTCMS: 180})
-	if err != nil || lookup.Complete {
-		t.Fatalf("empty diagnostic gap became covered: %+v, %v", lookup, err)
+	for _, partial := range []bool{false, true} {
+		t.Run(fmt.Sprintf("partial=%t", partial), func(t *testing.T) {
+			upstream := &fakeProvider{response: func(r model.CandleRequest) ([]model.Candle, error) {
+				if !partial {
+					return nil, nil
+				}
+				return []model.Candle{{OpenTimeUTCMS: r.FromUTCMS, CloseTimeUTCMS: r.FromUTCMS + 3600000, Open: "1", High: "2", Low: "1", Close: "2", Volume: "0", IsClosed: true}}, nil
+			}}
+			svc, store, scheduler := newService(t, t.TempDir()+"/cache.sqlite", upstream)
+			defer closeService(t, store, scheduler)
+			req := request(0, 7200000)
+			req.Series = model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}
+			for i := 0; i < 2; i++ {
+				_, err := svc.Get(context.Background(), "diagnostic", ratelimit.PriorityLiveRefresh, req)
+				var typed *apperror.Error
+				if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown {
+					t.Fatalf("expected coverage unknown, got %v", err)
+				}
+			}
+			lookup, err := svc.cache.Lookup(req.Series, cache.Range{FromUTCMS: 0, ToUTCMS: 7200000})
+			if err != nil || lookup.Complete || len(lookup.Entry.Candles) != 0 {
+				t.Fatalf("incomplete diagnostic cached: %+v, %v", lookup, err)
+			}
+		})
 	}
 }

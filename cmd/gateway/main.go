@@ -244,7 +244,7 @@ func main() {
 	}
 	handlerOpts := []httpapi.HandlerOption{httpapi.WithSeriesDescriptors(tbankReg.Describe), httpapi.WithNodeID(cfg.Cluster.NodeID)}
 	if *cryptoMode == "diagnostic" {
-		handlerOpts = append(handlerOpts, httpapi.WithFundingResolver(diagnosticFundingResolver))
+		handlerOpts = append(handlerOpts, httpapi.WithFundingResolver(diagnosticFundingResolver), httpapi.WithMarkResolver(diagnosticMarkResolver))
 	}
 	if clientDirectory.Enabled() {
 		logger.Info("client identity allowlist active", "identities", len(cfg.Auth.Clients))
@@ -625,6 +625,14 @@ func diagnosticFundingResolver(venue, symbol, timeframe string) (model.SeriesKey
 		return model.SeriesKey{}, apperror.New(apperror.CodeCoverageUnknown, "funding identity unavailable", 0)
 	}
 	return model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: timeframe, CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}, nil
+}
+
+// diagnosticMarkResolver admits only the pinned Binance USD-M mark identity.
+func diagnosticMarkResolver(venue, symbol, timeframe string) (model.SeriesKey, error) {
+	if venue != "binance" || symbol != "BTC/USDT:USDT" || timeframe != "1h" {
+		return model.SeriesKey{}, apperror.New(apperror.CodeCoverageUnknown, "mark identity unavailable", 0)
+	}
+	return model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: timeframe, CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}, nil
 }
 
 // runPrewarm doses warmup-priority refreshes for the local tbank universe at

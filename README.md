@@ -14,7 +14,7 @@ call during tests or startup validation.
 - **Deterministic cluster routing** (optional multi-node): weighted rendezvous ownership per canonical series, private peer API with node-to-node verification, quorum/fencing lease for automatic failover, cluster-wide budget guard.
 - **Providers**: TBank (generated gRPC bindings) and a deterministic fake provider for local development.
 
-## Reconciled funding diagnostics
+## Reconciled funding and mark diagnostics
 
 With the explicit `-crypto-mode=diagnostic` option, the single GET endpoint
 accepts `candle_type=funding&completeness=reconciled&diagnostic_only=true`
@@ -32,8 +32,13 @@ can reuse it without a separate reconciliation and do not prove completeness.
 When a pin is available, upstream egress uses `data.binance.vision` and
 `fapi.binance.com`.
 Diagnostic mode does not serve spot trade candles; fake mode remains unchanged.
-Non-owner funding peer transport and mark GET are not implemented and fail
-closed. No live availability is inferred from the historical payment time.
+Mark GET uses `candle_type=mark&completeness=reconciled&diagnostic_only=true`
+with the same venue and symbol, `timeframe=1h`, hour-aligned closed windows,
+and a maximum limit of 1000. Only January 2024 is pinned, and a request must
+stay within one month. A pinned archive and an independent API window must
+agree; empty, partial, unknown or conflicting data fail closed. A reconciled
+result is diagnostic agreement, not proof of completeness. Cached subwindows
+reuse reconciled coverage. Non-owner funding peer transport fails closed; mark uses the candle peer path. No live availability is inferred from the historical payment time.
 
 ## Requirements
 
@@ -237,7 +242,7 @@ Futures identity contract:
   order; unlabeled series retain the five-field identity. Funding/mark
   diagnostic identities are restricted to Binance futures with native USDT
   symbols. `reconciled` does not prove completeness; `unknown` is refused.
-  Production funding GET is limited to independently pinned archives reconciled against the API; mark GET remains unavailable.
+  Production funding and mark GET are limited to independently pinned archives reconciled against the API.
   The storage schema version stays owned by the migration chain; the response
   envelope carries its own `schema_version`.
 - A logical alias (for example a rolling `GOLD` ticker) is a **resolution
