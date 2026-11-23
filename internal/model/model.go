@@ -31,7 +31,7 @@ func (k SeriesKey) Validate() error {
 	if k.CandleType != "trade" && k.CandleType != "mark" && k.CandleType != "funding" {
 		return fmt.Errorf("invalid candle type")
 	}
-	// TODO: Allow proven completeness with diagnostic_only=false only after proven completeness is approved.
+	// TODO: Allow proven completeness with diagnostic_only=false only after proven completeness is approved (#1049).
 	if k.CandleType == "funding" || k.CandleType == "mark" || k.Completeness != "" || k.DiagnosticOnly {
 		if (k.Completeness != "reconciled" && k.Completeness != "unknown") || !k.DiagnosticOnly || (k.CandleType != "funding" && k.CandleType != "mark") || k.Venue != "binance" || k.MarketType != "futures" || len(k.ProviderInstrumentID) <= len("USDT") || !strings.HasSuffix(k.ProviderInstrumentID, "USDT") || strings.Trim(k.ProviderInstrumentID, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != "" {
 			return fmt.Errorf("invalid diagnostic series labels")

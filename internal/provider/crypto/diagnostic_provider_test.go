@@ -19,3 +19,14 @@ func TestDiagnosticProviderFetchFundingMissingSource(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnosticProviderFetchCandlesMissingSource(t *testing.T) {
+	request := model.CandleRequest{Series: model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}}
+	for _, provider := range []*DiagnosticProvider{nil, {}} {
+		candles, metadata, err := provider.FetchCandles(context.Background(), request)
+		var typed *apperror.Error
+		if candles != nil || metadata != (model.ProviderMetadata{}) || !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown || typed.Retryable {
+			t.Fatalf("candles=%v metadata=%v err=%v", candles, metadata, err)
+		}
+	}
+}

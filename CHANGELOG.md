@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — fix(gateway): address review notes (refs #1048)
+
+- Correct peer funding history, track diagnostic completeness deferral, and test missing mark sources.
+
 ## 2026-11-23 — fix(gateway): address diagnostic review (refs #1048)
 
 - Guard missing funding sources, remove unreachable error handling, and cover incomplete mark HTTP requests.
@@ -46,7 +50,7 @@
 
 ## 2026-11-23 — feat(gateway): serve diagnostic funding GET (refs #1048)
 
-- Route explicitly labeled reconciled funding through scheduler, owner gate, cache and SQLite; enable a diagnostic Binance mode for the pinned BTCUSDT archive window. Non-owner peer funding and mark remain unavailable and fail closed.
+- Route explicitly labeled reconciled funding through scheduler, owner gate, cache and SQLite; enable a diagnostic Binance mode for the pinned BTCUSDT archive window. Non-owner peer funding remains unavailable and fails closed.
 
 ## 2026-11-23 — feat(storage): persist typed funding events (refs #1048)
 
