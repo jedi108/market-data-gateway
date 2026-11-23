@@ -61,7 +61,7 @@ func (s *BinanceMarkSource) Fetch(ctx context.Context, key model.SeriesKey, from
 		return fail()
 	}
 	var rows [][]json.RawMessage
-	if json.Unmarshal(body, &rows) != nil || len(rows) == 0 || len(rows) >= limit {
+	if json.Unmarshal(body, &rows) != nil || len(rows) == 0 || len(rows) > limit {
 		return fail()
 	}
 	result := make([]model.Candle, 0, len(rows))
@@ -85,7 +85,9 @@ func (s *BinanceMarkSource) Fetch(ctx context.Context, key model.SeriesKey, from
 			result = append(result, candle)
 		}
 	}
-	if len(result) == 0 {
+	// A full page is usable only when it reaches the requested right edge;
+	// otherwise a further page may exist and this source must not truncate.
+	if len(result) == 0 || (len(rows) == limit && previous+step < toMS) {
 		return fail()
 	}
 	return result, nil

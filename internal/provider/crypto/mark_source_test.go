@@ -33,7 +33,7 @@ func TestBinanceMarkSourceScheduledClosedOnly(t *testing.T) {
 	sched := ratelimit.NewScheduler(ratelimit.Config{NodeBudgetPerMinute: 1, PerClientQuotaPerMinute: 1, MaxTrackedClients: 2, QueueCapacity: 2, WorkerCount: 1, RetryBaseDelay: time.Millisecond})
 	defer sched.Drain(context.Background())
 	done, err := sched.Submit(context.Background(), "client", ratelimit.PriorityLiveRefresh, func(ctx context.Context) error {
-		candles, err := source.Fetch(ctx, key, 0, 7200000, 10)
+		candles, err := source.Fetch(ctx, key, 0, 7200000, 2)
 		if err != nil {
 			return err
 		}
@@ -75,7 +75,7 @@ func TestBinanceMarkSourceRejectsUnverifiableResponse(t *testing.T) {
 			sched := ratelimit.NewScheduler(ratelimit.Config{NodeBudgetPerMinute: 1, PerClientQuotaPerMinute: 1, MaxTrackedClients: 2, QueueCapacity: 2, WorkerCount: 1, RetryBaseDelay: time.Millisecond})
 			defer sched.Drain(context.Background())
 			done, err := sched.Submit(context.Background(), "client", ratelimit.PriorityLiveRefresh, func(ctx context.Context) error {
-				candles, err := source.Fetch(ctx, key, 0, 7200000, 2)
+				candles, err := source.Fetch(ctx, key, 0, 10800000, 2)
 				if err == nil || len(candles) != 0 {
 					return fmt.Errorf("accepted invalid or possibly truncated response: %+v, %v", candles, err)
 				}
