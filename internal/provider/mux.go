@@ -43,3 +43,15 @@ func (m *Mux) FetchCandles(ctx context.Context, request model.CandleRequest) ([]
 	}
 	return p.FetchCandles(ctx, request)
 }
+
+func (m *Mux) FetchFunding(ctx context.Context, request model.CandleRequest) ([]model.FundingEvent, error) {
+	p, ok := m.byVenue[request.Series.Venue]
+	if !ok {
+		return nil, apperror.New(apperror.CodeCoverageUnknown, "funding provider unavailable", 0)
+	}
+	funding, ok := p.(FundingProvider)
+	if !ok {
+		return nil, apperror.New(apperror.CodeCoverageUnknown, "funding provider unavailable", 0)
+	}
+	return funding.FetchFunding(ctx, request)
+}

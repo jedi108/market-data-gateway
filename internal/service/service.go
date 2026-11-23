@@ -51,6 +51,7 @@ var ErrIncompleteCoverage = apperror.New(apperror.CodeIncompleteCoverage, "provi
 // (task 109 invariants).
 type Result struct {
 	Candles              []model.Candle
+	FundingEvents        []model.FundingEvent
 	CacheStatus          CacheStatus
 	Freshness            Freshness
 	Replica              bool
@@ -272,6 +273,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	}
 	memory = s.epochAwareLookup(request.Series, requested, memory)
 	if memory.Complete {
+		if request.Series.CandleType == "funding" && len(memory.Entry.FundingEvents) > request.Limit {
+			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result exceeds limit", 0)
+		}
 		s.recordCandleAge(request.Series, memory.Entry.Candles)
 		s.logDebug("memory coverage complete", request.Series)
 		return s.memoryResult(request.Series, memory.Entry), nil
@@ -286,6 +290,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	}
 	memory = s.epochAwareLookup(request.Series, requested, memory)
 	if memory.Complete {
+		if request.Series.CandleType == "funding" && len(memory.Entry.FundingEvents) > request.Limit {
+			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result exceeds limit", 0)
+		}
 		s.persistentHits.Add(1)
 		s.recordCandleAge(request.Series, memory.Entry.Candles)
 		s.logDebug("persistent coverage complete", request.Series)
@@ -304,6 +311,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 			return Result{}, err
 		}
 		if !local {
+			if request.Series.CandleType == "funding" {
+				return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding peer transport unavailable", 0)
+			}
 			return s.peerFetch(ctx, request, requested)
 		}
 	}
@@ -313,6 +323,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	// attempt budget. A deferred series is served from cache with honest
 	// stale semantics — never labeled fresh.
 	if !s.refreshPermitted(request.Series, memory.Missing) {
+		if request.Series.DiagnosticOnly {
+			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "diagnostic coverage incomplete", 0)
+		}
 		s.refreshDeferred.Add(1)
 		s.logInfo("refresh deferred until next epoch; serving cached snapshot", request.Series)
 		return s.deferredResult(request, memory)
@@ -338,6 +351,13 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 		})
 	}
 	if refreshErr != nil {
+		if request.Series.DiagnosticOnly {
+			var upstream *upstreamFailure
+			if errors.As(refreshErr, &upstream) {
+				return Result{}, upstream.err
+			}
+			return Result{}, refreshErr
+		}
 		var upstream *upstreamFailure
 		if errors.As(refreshErr, &upstream) {
 			s.noteEpochOutcome(request.Series, upstream.err)
@@ -395,6 +415,9 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 		s.recorder().RecordIntegrityRejection(request.Series.Venue, "incomplete_coverage")
 		s.logError("successful provider response left coverage incomplete", request.Series, "reason", "incomplete_coverage")
 		return Result{}, ErrIncompleteCoverage
+	}
+	if request.Series.CandleType == "funding" && len(memory.Entry.FundingEvents) > request.Limit {
+		return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result exceeds limit", 0)
 	}
 	s.recordCandleAge(request.Series, memory.Entry.Candles)
 	result := s.memoryResult(request.Series, memory.Entry)
@@ -499,6 +522,9 @@ func (s *Service) loadPersistent(key model.SeriesKey, requested cache.Range) err
 	for _, interval := range snapshot.Metadata.Coverage {
 		coverage = append(coverage, cache.Range{FromUTCMS: interval.FromUTCMS, ToUTCMS: interval.ToUTCMS})
 	}
+	if key.CandleType == "funding" {
+		return s.cache.MergeFundingCoverage(key, snapshot.FundingEvents, coverage, snapshot.Metadata.Replica)
+	}
 	return s.cache.MergeCoverage(key, snapshot.Candles, coverage, snapshot.Metadata.Replica)
 }
 
@@ -542,6 +568,9 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 		// forming candle are never fetched, so one provider refresh per
 		// series per epoch covers the closed bars.
 		fetchRange, ok := s.trimFetchRangeToEpoch(request.Series, missing)
+		if request.Series.CandleType == "funding" {
+			fetchRange, ok = missing, true
+		}
 		if !ok {
 			continue
 		}
@@ -558,12 +587,21 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 		fetch.FromUTCMS, fetch.ToUTCMS = fetchRange.FromUTCMS, fetchRange.ToUTCMS
 		providerCtx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
 		var candles []model.Candle
+		var fundingEvents []model.FundingEvent
 		var metadata model.ProviderMetadata
 		started := s.now()
 		s.recorder().InflightInc(request.Series.Venue, providerName)
 		result, submitErr := s.scheduler.Submit(providerCtx, clientID, priority, func(opCtx context.Context) error {
 			var err error
-			candles, metadata, err = s.provider.FetchCandles(opCtx, fetch)
+			if request.Series.CandleType == "funding" {
+				source, ok := s.provider.(provider.FundingProvider)
+				if !ok {
+					return apperror.New(apperror.CodeCoverageUnknown, "funding provider unavailable", 0)
+				}
+				fundingEvents, err = source.FetchFunding(opCtx, fetch)
+			} else {
+				candles, metadata, err = s.provider.FetchCandles(opCtx, fetch)
+			}
 			return err
 		})
 		if submitErr != nil {
@@ -578,6 +616,28 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 		if err != nil {
 			s.logWarn("upstream fetch failed", request.Series, "reason", upstreamStatus(err))
 			return &upstreamFailure{err: err}
+		}
+		if request.Series.CandleType == "funding" {
+			if len(fundingEvents) == 0 || len(fundingEvents) > fetch.Limit {
+				return &upstreamFailure{err: apperror.New(apperror.CodeCoverageUnknown, "funding source window invalid", 0)}
+			}
+			previous := int64(-1)
+			for _, event := range fundingEvents {
+				if event.Validate() != nil || event.Ts < fetch.FromUTCMS || event.Ts >= fetch.ToUTCMS || event.Ts <= previous {
+					return &upstreamFailure{err: apperror.New(apperror.CodeCoverageUnknown, "funding source window invalid", 0)}
+				}
+				previous = event.Ts
+			}
+			coverage := []cache.Range{fetchRange}
+			fetchedAt := s.now().UnixMilli()
+			if err := s.store.Save(request.Series, storage.Snapshot{FundingEvents: fundingEvents, Metadata: storage.Metadata{SourceFetchedAtUTCMS: fetchedAt, Coverage: storageCoverage(coverage)}}); err != nil {
+				return err
+			}
+			s.noteFetch(request.Series, fetchedAt)
+			if err := s.cache.MergeFundingCoverage(request.Series, fundingEvents, coverage, false); err != nil {
+				return err
+			}
+			continue
 		}
 		if len(candles) == 0 {
 			if request.Series.DiagnosticOnly {
@@ -657,7 +717,7 @@ func (s *Service) memoryResult(key model.SeriesKey, entry cache.Entry) Result {
 	if entry.Replica {
 		s.replicaHits.Add(1)
 	}
-	return Result{Candles: entry.Candles, CacheStatus: CacheMemoryHit, Freshness: Fresh, Replica: entry.Replica, SourceFetchedAtUTCMS: s.recordedFetchTime(key)}
+	return Result{Candles: entry.Candles, FundingEvents: entry.FundingEvents, CacheStatus: CacheMemoryHit, Freshness: Fresh, Replica: entry.Replica, SourceFetchedAtUTCMS: s.recordedFetchTime(key)}
 }
 
 // ---------------------------------------------------------------------------
@@ -807,6 +867,9 @@ func (s *Service) epochLastErr(key model.SeriesKey) error {
 // candles still cover the full requested window, so include_incomplete
 // clients keep their cached live edge row (task 109).
 func (s *Service) epochAwareLookup(key model.SeriesKey, requested cache.Range, full cache.LookupResult) cache.LookupResult {
+	if key.CandleType == "funding" {
+		return full
+	}
 	step, ok := stepForTimeframe(key.Timeframe)
 	if !ok {
 		return full

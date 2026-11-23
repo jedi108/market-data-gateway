@@ -53,17 +53,23 @@ func WithSeriesDescriptors(fn SeriesDescriptor) HandlerOption {
 	return func(h *GatewayHandler) { h.describe = SeriesDescriptor(fn) }
 }
 
+// WithFundingResolver enables explicitly registered diagnostic funding identities.
+func WithFundingResolver(fn Resolver) HandlerOption {
+	return func(h *GatewayHandler) { h.resolveFunding = fn }
+}
+
 type GatewayHandler struct {
 	*HealthHandler
-	service       *service.Service
-	resolve       Resolver
-	maxLimit      int
-	maxBatchItems int
-	batchFanOut   int
-	logger        *slog.Logger
-	metrics       *gatewayMetrics
-	identity      IdentityResolver
-	describe      SeriesDescriptor
+	service        *service.Service
+	resolve        Resolver
+	resolveFunding Resolver
+	maxLimit       int
+	maxBatchItems  int
+	batchFanOut    int
+	logger         *slog.Logger
+	metrics        *gatewayMetrics
+	identity       IdentityResolver
+	describe       SeriesDescriptor
 }
 
 func NewGatewayHandler(build string, ready func() bool, candles *service.Service, resolve Resolver, maxLimit int) (*GatewayHandler, error) {
@@ -271,7 +277,7 @@ func (h *GatewayHandler) candles(w http.ResponseWriter, r *http.Request) {
 	if result.CacheStatus != service.CacheMemoryHit && result.CacheStatus != service.CachePersistentHit {
 		h.logger.Debug("gateway candle decision", "venue", request.Series.Venue, "timeframe", request.Series.Timeframe, "cache_status", result.CacheStatus, "freshness", result.Freshness)
 	}
-	write(w, http.StatusOK, candleEnvelope{SchemaVersion: 1, Series: request.Series, Candles: result.Candles, CacheStatus: result.CacheStatus, Freshness: result.Freshness, SourceFetchedAtUTCMS: result.SourceFetchedAtUTCMS, Replica: result.Replica, ProviderStatus: result.ProviderStatus, StaleCause: errorCode(result.StaleCause), Instrument: h.instrumentMetadata(request.Series)})
+	write(w, http.StatusOK, candleEnvelope{SchemaVersion: 1, Series: request.Series, Candles: result.Candles, FundingEvents: result.FundingEvents, CacheStatus: result.CacheStatus, Freshness: result.Freshness, SourceFetchedAtUTCMS: result.SourceFetchedAtUTCMS, Replica: result.Replica, ProviderStatus: result.ProviderStatus, StaleCause: errorCode(result.StaleCause), Instrument: h.instrumentMetadata(request.Series)})
 }
 
 // instrumentMetadata resolves the physical-instrument metadata of a served
@@ -309,9 +315,16 @@ func (h *GatewayHandler) recordSeriesObservability(key model.SeriesKey, result s
 func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
 	query := r.URL.Query()
 	for _, candleType := range query["candle_type"] {
-		if candleType != "trade" {
+		if candleType != "trade" && !(candleType == "funding" && h.resolveFunding != nil) {
 			return model.CandleRequest{}, apperror.New(apperror.CodeUnsupportedCapability, "requested candle type is not available", 0)
 		}
+	}
+	if len(query["candle_type"]) > 1 {
+		return model.CandleRequest{}, apperror.New(apperror.CodeUnsupportedCapability, "ambiguous candle type", 0)
+	}
+	funding := query.Get("candle_type") == "funding"
+	if funding && (len(query["completeness"]) != 1 || query.Get("completeness") != "reconciled" || len(query["diagnostic_only"]) != 1 || query.Get("diagnostic_only") != "true") {
+		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "funding requires reconciled diagnostic coverage", 0)
 	}
 	venue, symbol, timeframe := query.Get("venue"), query.Get("symbol"), query.Get("timeframe")
 	if venue == "" || symbol == "" || timeframe == "" {
@@ -336,9 +349,19 @@ func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
 	if err != nil {
 		return model.CandleRequest{}, apperror.New(apperror.CodeInvalidRequest, "include_incomplete must be true or false", 0)
 	}
-	key, err := h.resolve(venue, symbol, timeframe)
+	if funding && includeIncomplete {
+		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "forming funding unavailable", 0)
+	}
+	resolve := h.resolve
+	if funding {
+		resolve = h.resolveFunding
+	}
+	key, err := resolve(venue, symbol, timeframe)
 	if err != nil {
 		return model.CandleRequest{}, err
+	}
+	if funding && (key.Validate() != nil || key.CandleType != "funding" || key.Completeness != "reconciled" || !key.DiagnosticOnly) {
+		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "funding identity unavailable", 0)
 	}
 	return model.CandleRequest{Series: key, FromUTCMS: from, ToUTCMS: to, Limit: limit, IncludeIncomplete: includeIncomplete}, nil
 }
@@ -386,15 +409,16 @@ func (h *GatewayHandler) writeError(w http.ResponseWriter, err error) {
 }
 
 type candleEnvelope struct {
-	SchemaVersion        int                 `json:"schema_version"`
-	Series               model.SeriesKey     `json:"series"`
-	Candles              []model.Candle      `json:"candles"`
-	CacheStatus          service.CacheStatus `json:"cache_status"`
-	Freshness            service.Freshness   `json:"freshness"`
-	SourceFetchedAtUTCMS int64               `json:"source_fetched_at_utc_ms"`
-	Replica              bool                `json:"replica"`
-	ProviderStatus       string              `json:"provider_status"`
-	StaleCause           string              `json:"stale_cause,omitempty"`
+	SchemaVersion        int                  `json:"schema_version"`
+	Series               model.SeriesKey      `json:"series"`
+	Candles              []model.Candle       `json:"candles"`
+	FundingEvents        []model.FundingEvent `json:"funding_events,omitempty"`
+	CacheStatus          service.CacheStatus  `json:"cache_status"`
+	Freshness            service.Freshness    `json:"freshness"`
+	SourceFetchedAtUTCMS int64                `json:"source_fetched_at_utc_ms"`
+	Replica              bool                 `json:"replica"`
+	ProviderStatus       string               `json:"provider_status"`
+	StaleCause           string               `json:"stale_cause,omitempty"`
 	// Instrument is the physical-instrument identity/units metadata (F20). It
 	// is omitted when no descriptor is installed, keeping the legacy share
 	// response shape byte-compatible.

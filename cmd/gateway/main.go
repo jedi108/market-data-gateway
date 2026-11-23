@@ -42,7 +42,7 @@ func main() {
 	configPath := flag.String("config", "", "path to gateway YAML configuration")
 	cleanupOnce := flag.Bool("cleanup-once", false, "run one configured SQLite retention pass and exit")
 	providerMode := flag.String("provider", "", "upstream provider: fake (local verification only); empty or tbank requires explicit authorization")
-	cryptoMode := flag.String("crypto-mode", "", "crypto upstream provider: fake (local verification only); empty disables crypto venues; real mode requires explicit endpoint per venue")
+	cryptoMode := flag.String("crypto-mode", "", "crypto upstream provider: fake (local verification only) or diagnostic (reconciled funding only); empty disables crypto venues")
 	tbankEndpoint := flag.String("tbank-endpoint", "", "explicit TBank host:port for the real provider transport (required for real traffic; never implicit)")
 	tbankInstrumentsFile := flag.String("tbank-instruments-file", "", "optional JSON path for the TBank instrument registry: recovered at startup (restart recovery of the last atomic refresh); the refresh API persists updates there")
 	logLevel := flag.String("log-level", "INFO", "minimum log level: DEBUG, INFO, WARN, ERROR")
@@ -243,6 +243,9 @@ func main() {
 		logFatal(err.Error())
 	}
 	handlerOpts := []httpapi.HandlerOption{httpapi.WithSeriesDescriptors(tbankReg.Describe), httpapi.WithNodeID(cfg.Cluster.NodeID)}
+	if *cryptoMode == "diagnostic" {
+		handlerOpts = append(handlerOpts, httpapi.WithFundingResolver(diagnosticFundingResolver))
+	}
 	if clientDirectory.Enabled() {
 		logger.Info("client identity allowlist active", "identities", len(cfg.Auth.Clients))
 		handlerOpts = append(handlerOpts, httpapi.WithIdentityResolver(clientDirectory.Resolve))
@@ -432,6 +435,8 @@ func buildProvider(mode string, cryptoMode string, cfg config.Config, logger *sl
 	switch cryptoMode {
 	case "":
 		// crypto disabled; resolver will reject binance/bybit.
+	case "diagnostic":
+		mux.Register("binance", cryptoprovider.NewDiagnosticProvider(&http.Client{Timeout: 30 * time.Second}))
 	case "fake":
 		logger.Warn("FAKE crypto provider active: synthetic candles only, never production")
 		reg, err := cryptoprovider.NewRegistry(defaultCryptoInstruments(), defaultCryptoSemantics())
@@ -605,6 +610,15 @@ func resolver(tbankReg *tbankprovider.Registry) httpapi.Resolver {
 			return model.SeriesKey{}, apperror.New(apperror.CodeInvalidRequest, "unsupported venue", 0)
 		}
 	}
+}
+
+// diagnosticFundingResolver exposes only the explicitly pinned Binance USD-M
+// contract; it does not infer a futures identity from a spot registry entry.
+func diagnosticFundingResolver(venue, symbol, timeframe string) (model.SeriesKey, error) {
+	if venue != "binance" || symbol != "BTC/USDT" || timeframe != "8h" {
+		return model.SeriesKey{}, apperror.New(apperror.CodeCoverageUnknown, "funding identity unavailable", 0)
+	}
+	return model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: timeframe, CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}, nil
 }
 
 // runPrewarm doses warmup-priority refreshes for the local tbank universe at
