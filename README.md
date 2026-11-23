@@ -1,299 +1,550 @@
 # Market Data Gateway
 
-A Go market-data boundary service: a single caching, rate-limited access layer
-between trading/runtime clients and upstream candle providers. It exposes
-read-only candle APIs, makes no execution/order calls, and performs no provider
-call during tests or startup validation.
+**Шлюз рыночных данных на Go: один кеширующий, лимитированный и отказоустойчивый
+вход к биржевым свечам для торговых ботов, исследовательских конвейеров и
+AI-агентов.**
 
-## Features
+![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)
+![CGO](https://img.shields.io/badge/CGO-free-success)
+![Tests](https://img.shields.io/badge/tests-211%20функций%20·%2023%20пакета-success)
+![MCP](https://img.shields.io/badge/MCP-ready-8A2BE2)
+![Read-only](https://img.shields.io/badge/торговых%20операций-0-lightgrey)
 
-- **Client API**: `/v1/health`, `/v1/ready`, `/v1/candles`, `/v1/candles/batch`, Prometheus `/v1/metrics`.
-- **Fail-closed configuration**: strict YAML schema; the gateway refuses to start on unknown fields, missing values, or unsafe invariants.
-- **Bounded upstream budget**: per-provider safe/node budget guard with runtime enforcement before every upstream call.
-- **Cache + singleflight**: in-memory request coalescing and a persistent SQLite (pure-Go driver, CGO-free) replica cache with bounded retention.
-- **Deterministic cluster routing** (optional multi-node): weighted rendezvous ownership per canonical series, private peer API with node-to-node verification, quorum/fencing lease for automatic failover, cluster-wide budget guard.
-- **Providers**: TBank (generated gRPC bindings) and a deterministic fake provider for local development.
+> English version: [README.en.md](README.en.md) · Непонятный термин? — [словарь](DOC/terms/README.md)
 
-## Reconciled funding and mark diagnostics
+---
 
-With the explicit `-crypto-mode=diagnostic` option, the single GET endpoint
-accepts `candle_type=funding&completeness=reconciled&diagnostic_only=true`
-for `venue=binance`, `symbol=BTC/USDT:USDT`, and `timeframe=8h`. The normal window,
-limit and `include_incomplete=false` parameters remain required. The response
-has typed `funding_events` and diagnostic labels in `series`.
+## Задача, которую решает проект
 
-Only the Binance BTCUSDT January 2024 funding archive is pinned; other months fail closed. The gateway requires
-both the pinned archive and matching API observations; missing pins, conflicting
-sources, an empty window, or an over-limit result fail closed. Reconciliation is
-diagnostic agreement, **not proof of completeness**. The 8h series identity
-is not a claim that every event's interval is 8h; use each event's `interval_h`.
-Cached coverage is recorded for a reconciled request range; non-empty subwindows
-can reuse it without a separate reconciliation and do not prove completeness.
-When a pin is available, upstream egress uses `data.binance.vision` and
-`fapi.binance.com`.
-Diagnostic mode does not serve spot trade candles; fake mode remains unchanged.
-Mark GET uses `candle_type=mark&completeness=reconciled&diagnostic_only=true`
-with the same venue and symbol, `timeframe=1h`, hour-aligned closed windows,
-and a maximum limit of 1000. Only January 2024 is pinned, and a request must
-stay within one month. A pinned archive and an independent API window must
-agree; empty, partial, unknown or conflicting data fail closed. A reconciled
-result is diagnostic agreement, not proof of completeness. Cached subwindows
-reuse reconciled coverage. Non-owner funding peer transport fails closed; mark uses the candle peer path. No live availability is inferred from the historical payment time.
+Десятки потребителей — торговые боты (Freqtrade), бэктесты, ноутбуки,
+AI-агенты — хотят свечи одного и того же брокера (T-Bank Invest API). Если
+каждый ходит к брокеру сам, получается:
 
-## Requirements
+- **лимиты API сгорают** — одинаковые запросы дублируются, холодный старт
+  80 серий бьёт по API одновременно;
+- **данные расходятся** — у каждого свой кеш и своё понимание «последней свечи»;
+- **сбой брокера = сбой всех** — нет общей деградации и честного «устаревшего» ответа.
 
-- Go 1.25+ (see `go.mod`), `CGO_ENABLED=0` supported and used in production builds.
+Market Data Gateway ставит между потребителями и провайдером **одну
+архитектурную границу**: каждая свеча запрашивается у провайдера один раз,
+бюджет запросов гарантирован математически, а при сбое клиент получает
+кешированные данные с явной [пометкой свежести](DOC/terms/cache.md#свежесть) — а не пустой ответ и не
+«свежие» данные, которые на самом деле старые.
 
-## Build and test
+Сервис **только читает**: в нём нет ни одного вызова заявок или торговых
+операций — это граница архитектуры, а не настройка.
 
-```bash
-make build          # CGO_ENABLED=0 binaries build/gateway, build/gateway-mcp
-make test           # CGO_ENABLED=0 go test ./...
-make test-race      # CGO_ENABLED=1 go test -race ./...
-make vet
-make fmt-check
-make verify         # fmt-check + vet + test + local smoke + MCP smoke
+---
+
+## Архитектура одним взглядом
+
+```mermaid
+flowchart LR
+    subgraph Clients["Потребители"]
+        FT["Freqtrade / боты"]
+        NB["Бэктесты, ноутбуки"]
+        AI["AI-агенты<br/>(Claude, Codex, OpenCode)"]
+    end
+
+    AI -->|MCP stdio / HTTP| MCP["gateway-mcp<br/>индикаторы ATR, ADX, EMA, vol"]
+    MCP -->|/v1/candles| API
+    FT -->|/v1/candles, /v1/candles/batch| API
+    NB --> API
+
+    subgraph Node["Узел шлюза"]
+        API["HTTP API<br/>квоты клиентов"] --> SVC["Сервис свечей"]
+        SVC --> MEM["L1: память<br/>+ singleflight"]
+        SVC --> SQL[("L2: SQLite<br/>реплика-кеш")]
+        SVC --> SCH["Планировщик<br/>приоритеты · скользящее окно"]
+        SCH --> BG["Бюджет-гард<br/>кластера"]
+        BG --> LG["Fencing-lease<br/>гейт"]
+    end
+
+    LG --> PRV["Провайдеры<br/>T-Bank gRPC · crypto · fake"]
+    SVC <-->|один peer-хоп| PEER["Другие узлы<br/>(rendezvous-владелец серии)"]
 ```
 
-Generated TBank bindings are based on the pinned `RussianInvestments/invest-python` source revision `2a0074a` (Apache-2.0; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); only `common.proto`, `marketdata.proto`, and `field_behavior.proto` are checked in under `internal/provider/tbank/gen`. The bindings are generated with `protoc v5.29.3`, `protoc-gen-go v1.36.12`, and `protoc-gen-go-grpc v1.5.1`; provider protobuf imports are deliberately confined to `internal/provider/tbank`.
+| Уровень | Что делает | Где в коде |
+|---|---|---|
+| Клиентский API | свечи, батчи, health/ready, Prometheus-метрики | `internal/httpapi` |
+| Сервис | путь запроса: кеш → владелец → эпоха → singleflight → провайдер | `internal/service` |
+| Кеш | память с учётом покрытия интервалов + singleflight | `internal/cache` |
+| Хранилище | SQLite-реплика, свои миграции, fail-closed на чужую схему | `internal/storage` |
+| Допуск к API | планировщик, приоритеты, квоты, повторы, drain | `internal/ratelimit` |
+| Бюджет | инвариант бюджета на группу учётных данных | `internal/budget` |
+| Кластер | rendezvous-маршрутизация, peer API, fencing-аренда | `internal/routing`, `internal/cluster`, `internal/peerapi`, `internal/lease` |
+| Провайдеры | T-Bank (gRPC), crypto (CCXT-подобный), детерминированный fake | `internal/provider` |
+| AI-слой | MCP-сервер и чистые функции индикаторов | `cmd/mcp`, `internal/indicators` |
 
-## Quick start (fake provider, single node, loopback only)
+Около 18 тыс. строк Go, сборка [без CGO](DOC/terms/reliability.md#cgo-free) (`CGO_ENABLED=0`), один статический бинарник.
 
-No token, no VPN, no root, no non-loopback interface required:
+---
+
+## Путь одного запроса
+
+Каждый запрос свечей проходит фиксированный конвейер; на каждом шаге может
+завершиться раньше — и чем раньше, тем дешевле.
+
+```mermaid
+flowchart TD
+    R["Запрос: серия + интервал"] --> M{"Память покрывает<br/>закрытую часть окна?"}
+    M -- да --> H1["memory_hit"]
+    M -- нет --> S{"SQLite покрывает?"}
+    S -- да --> H2["persistent_hit"]
+    S -- нет --> O{"Этот узел —<br/>владелец серии?"}
+    O -- нет --> P["Один peer-хоп к владельцу<br/>(без локального фолбэка)"]
+    O -- да --> E{"Лимит попыток<br/>в этой эпохе свечи?"}
+    E -- исчерпан --> D["Отдать кеш с честной<br/>пометкой устаревания"]
+    E -- есть --> F["singleflight: один полёт на серию"]
+    F --> Q["Планировщик → бюджет-гард → lease-гейт"]
+    Q --> U["Провайдер: только недостающие<br/>закрытые диапазоны"]
+    U --> W["Слияние + одна атомарная запись в SQLite"]
+    W --> H3["refreshed"]
+    Q -. отказ допуска .-> SWR["stale_acceptable +<br/>фоновое обновление (SWR)"]
+```
+
+---
+
+## 1. Закрытие свечей: не скачивать то, что уже есть
+
+Ключевая идея — **кешируется не набор свечей, а [покрытие интервалов](DOC/terms/candles.md#покрытие-интервала)**.
+Отсутствующая свеча (например, ночью нет сделок) и непокачанный интервал —
+разные вещи, и шлюз их не путает (`cache.Range`, `LookupResult.Missing`).
+Отсюда несколько механизмов:
+
+- **Докачка только дыр.** Запрос раскладывается на уже покрытые и
+  недостающие диапазоны; провайдеру уходят только `Missing`. Клиент может
+  каждый раз просить «последние 500 баров» — к брокеру уйдёт одна новая свеча.
+- **[Эпоха закрытой свечи](DOC/terms/candles.md#эпоха-обновления).** Граница обновления серии — открытие текущего бара
+  (`refreshEpochMS`). Пока новый бар не закрылся, повторный опрос не порождает
+  вызовов провайдера сверх лимита попыток на эпоху
+  (`max_refresh_attempts_per_epoch`, по умолчанию 2: одна — на обычное
+  обновление, вторая — на задержку публикации у брокера).
+- **[Формирующаяся свеча](DOC/terms/candles.md#закрытая-и-формирующаяся-свеча) не форсирует запрос.** Полнота окна оценивается только
+  по закрытой части (`epochAwareLookup`): «живой» бар, который провайдер мог
+  ещё не опубликовать, не ломает кеш-хит. Флаг `include_incomplete` решает,
+  показывать ли его клиенту.
+- **[Грейс публикации](DOC/terms/candles.md#грейс-публикации).** `publication_grace_ms` сдвигает границу эпохи: только
+  что закрытый бар не дёргается у провайдера, пока тот его обычно ещё не
+  выложил.
+- **Учёт по сигнатуре диапазона.** Одинаковые повторные опросы делят один лимит
+  попыток, разные диапазоны качаются независимо — бюджет не сгорает от
+  клиента, который опрашивает раз в секунду.
+
+Итог: частота обращений к брокеру определяется **таймфреймом рынка**, а не
+количеством клиентов и частотой их опроса.
+
+---
+
+## 2. Режимы кеширования
+
+Двухуровневый кеш с явными состояниями: каждый ответ говорит, откуда данные
+и насколько они свежие.
+
+| `cache_status` | Смысл |
+|---|---|
+| `memory_hit` | окно целиком в памяти узла |
+| `persistent_hit` | окно поднято из SQLite (после рестарта или вытеснения) |
+| `singleflight_join` | запрос присоединился к уже идущему полёту той же серии |
+| `refreshed` | недостающие диапазоны докачаны у провайдера и сохранены |
+| `miss` | обновить не удалось — отдан последний снимок из кеша или честный отказ (см. `freshness`) |
+
+| `freshness` | Смысл |
+|---|---|
+| `fresh` | данные актуальны для текущей эпохи |
+| `stale_acceptable` | провайдер недоступен или бюджет исчерпан, кеш моложе `MaxStaleAge` — отдаём с типизированной причиной |
+| `stale_rejected` | кеш слишком старый — честный отказ вместо вводящих в заблуждение данных |
+
+Поверх этого:
+
+- **[Singleflight](DOC/terms/cache.md#singleflight) на серию.** Сто одновременных запросов одной серии — один
+  вызов провайдера; присоединившиеся не тратят бюджет попыток.
+- **[Stale-while-revalidate](DOC/terms/cache.md#stale-while-revalidate).** Если ответ пришлось отдать устаревшим, ставится
+  ровно одно дедуплицированное фоновое обновление на серию (ограниченная
+  очередь, низший приоритет, ограниченные повторы) — восстановление не зависит
+  от того, будет ли клиент переспрашивать.
+- **[SQLite-реплика](DOC/terms/cache.md#реплика-кеш).** Чистый Go-драйвер без CGO, ограниченное хранение
+  (`cache_retention_ms`), собственная цепочка миграций только вперёд; более
+  новая схема на диске, чем знает бинарник, — отказ старта.
+- **Реплики от владельца.** В кластере ответы peer-узла сохраняются как
+  read-only реплики тем же путём, что и локальные.
+- **Контролируемый [прогрев](DOC/terms/cache.md#прогрев).** После старта шлюз дозированно, с приоритетом
+  warmup, прогревает вселенную инструментов — холодный старт Freqtrade
+  находит тёплый кеш вместо 80 одновременных промахов.
+
+---
+
+## 3. Оптимизация нагрузки на провайдера
+
+Лимит брокера — общий ресурс, и шлюз защищает его на нескольких уровнях:
+
+1. **[Батчи](DOC/terms/load.md#батч-и-fan-out).** `POST /v1/candles/batch` — до `max_batch_items` серий за один
+   запрос, с ограниченным параллелизмом (`batch_fan_out`), ошибки по каждой
+   позиции отдельно: одна плохая серия не валит остальные.
+2. **Планировщик с приоритетами.** Фиксированный пул воркеров, ограниченная
+   очередь, два приоритета: `live refresh` (клиенты) всегда впереди `warmup`
+   (прогрев и фоновое восстановление), warmup вытесняется первым.
+3. **[Скользящее окно](DOC/terms/load.md#скользящее-окно), а не «ведро».** Бюджет узла ограничивает число попыток
+   в *любом* окне длиной минуту — без всплесков на границе минуты.
+4. **[Квоты клиентов](DOC/terms/load.md#квота-клиента).** `per_client_quota_per_minute` и ограниченное число
+   отслеживаемых клиентов — один шумный потребитель не съедает общий лимит.
+5. **Повторы с [джиттером](DOC/terms/load.md#джиттер)** и ограничением числа попыток ([backoff](DOC/terms/load.md#backoff)), корректный [drain](DOC/terms/load.md#drain) при
+   остановке.
+6. **[Бюджет](DOC/terms/load.md#бюджет) кластера как [инвариант](DOC/terms/reliability.md#инвариант).**
+   `sum(node_hard_budgets_per_minute) <= safe_budget_per_minute` проверяется
+   при загрузке конфига (небезопасный конфиг — сервис не стартует) и ещё раз
+   перед *каждым* вызовом провайдера. Если брокер сообщил о сокращении лимита
+   ниже настроенной суммы, upstream-работа защёлкивается закрытой до рестарта.
+7. **[Capacity plan](DOC/terms/load.md#capacity-plan)** (`off` / `shadow` / `enforce`): прогноз нагрузки на
+   старте; `shadow` только экспортирует метрики, `enforce` не пускает в
+   ready неосуществимый план. Подробнее — [DOC/capacity_plan.md](DOC/capacity_plan.md),
+   [ADR-007](DOC/adr/ADR-007-capacity-planning.md).
+
+---
+
+## 4. Кластер без split-brain
+
+> Термины раздела: [словарь кластера](DOC/terms/cluster.md).
+
+Шлюз масштабируется горизонтально, сохраняя главный инвариант:
+**у каждой серии не больше одного узла, который ходит к провайдеру.**
+
+- **[Weighted rendezvous hashing](DOC/terms/cluster.md#weighted-rendezvous-hashing)** по каноническому `SeriesKey` с солью
+  `routing_version`: все узлы независимо и детерминированно вычисляют одного
+  primary и standby. Векторы зафиксированы golden-тестами.
+- **Ровно один [peer-хоп](DOC/terms/cluster.md#peer-хоп).** Не-владелец делает один ограниченный по времени
+  запрос к владельцу и **никогда** не уходит к провайдеру сам. Владелец
+  никогда не проксирует дальше — циклы структурно невозможны.
+- **Приватный peer API** с аутентификацией узлов (constant-time сравнение),
+  проверкой версии маршрутизации и владельца — для батчей поэлементно.
+- **Автоматический [failover](DOC/terms/cluster.md#failover) через [fencing-токены](DOC/terms/cluster.md#fencing-токен).** [Standby](DOC/terms/cluster.md#primary-и-standby) забирает серию
+  только получив аренду со строго большим токеном, подтверждённым большинством
+  [свидетелей](DOC/terms/cluster.md#кворум-и-свидетели). Узел с устаревшим токеном отвергается; нет кворума — нет
+  вызова провайдера. Деградация никогда не расширяет права владения.
+  Контракт и fault-тесты: [DOC/market_data_gateway_failover.md](DOC/market_data_gateway_failover.md).
+
+```bash
+make smoke-cluster2   # два узла на приватном IPv4
+make smoke-cluster3   # три узла
+```
+
+---
+
+## 5. MCP: рыночные данные для AI-агентов
+
+`gateway-mcp` — read-only сервер [Model Context Protocol](DOC/terms/protocols.md#mcp).
+Это тонкий клиент шлюза: к провайдеру он не ходит, поэтому кеш, singleflight
+и бюджет-гард действуют и для агентов. Индикаторы — чистые функции с
+[golden-тестами](DOC/terms/reliability.md#golden-тест) ([Wilder ATR](DOC/terms/market.md#atr), [ADX](DOC/terms/market.md#adx), [EMA](DOC/terms/market.md#ema), [realized volatility](DOC/terms/market.md#realized-volatility)).
+
+| Инструмент | Что возвращает |
+|---|---|
+| `get_candles` | OHLCV (десятичные строки), свежесть, флаг незакрытой свечи |
+| `get_volatility` | ATR, ATR % цены, realized vol (за бар и годовая), перцентиль ATR, метка `low` / `normal` / `high` |
+| `get_trend` | EMA 20/50/200, наклон EMA20, ADX(14), метка `up` / `down` / `flat` и сила тренда |
+| `market_snapshot` | до 20 инструментов за один батч-вызов: цена, изменение, метки волатильности и тренда |
+| `gateway_status` | health, ready, сборка, узел, площадки, таймфреймы |
+
+Промпт `market_brief(symbol, timeframe)` просит модель вызвать тренд и
+волатильность и написать краткую сводку. Ошибки [типизированы](DOC/terms/reliability.md#типизированная-ошибка):
+`INVALID_REQUEST`, `UNKNOWN_SYMBOL`, `GATEWAY_UNAVAILABLE`, `INSUFFICIENT_DATA`.
+
+Транспорты: [`stdio`](DOC/terms/protocols.md#stdio) для локальных агентов и [Streamable HTTP](DOC/terms/protocols.md#streamable-http) (`/mcp`) для
+удалённых — только с [bearer-токеном](DOC/terms/protocols.md#bearer-токен) и только на loopback/приватном адресе.
+
+```bash
+claude mcp add market-data -e MARKET_DATA_GATEWAY_URL=http://127.0.0.1:8088 -- ./build/gateway-mcp
+```
+
+Настройка Codex, OpenCode и HTTP-транспорта — в [README.en.md](README.en.md#mcp-server).
+
+---
+
+## 6. Фьючерсы и граница возможностей
+
+- **Идентичность серии — [физический контракт](DOC/terms/market.md#физический-контракт)** (UID конкретной экспирации), а
+  не логический тикер: история `GOLD-12.26` никогда не смешается со следующим
+  контрактом. Диагностические серии дописывают `|completeness|diagnostic_only`
+  в этом порядке; немаркированная серия сохраняет пятиполевую идентичность.
+  Диагностические идентичности funding/mark ограничены фьючерсами Binance с
+  нативными USDT-символами: `reconciled` полноты не доказывает, `unknown` отвергается.
+  Production GET funding и mark ограничен независимо закреплёнными архивами,
+  сверенными с API.
+- **[Алиас](DOC/terms/market.md#алиас) — только вход для разрешения**: в одном снимке реестра он указывает
+  ровно на один контракт; алиас на двух контрактах — ошибка конфигурации.
+- Ответ несёт метаданные инструмента: тип, единицы цены (`points` для
+  фьючерсов, валюта для акций), единицы объёма (`lots`), экспирацию.
+- **[Ролл](DOC/terms/market.md#ролл) без рестарта**: реестр инструментов перечитывается из файла,
+  кандидат валидируется целиком, сохраняется через [атомарный rename](DOC/terms/reliability.md#атомарный-rename) и
+  подменяется под блокировкой; битый файл отвергается, текущий реестр остаётся.
+- **Никаких тихих фолбэков**: всё вне границы (стаканы, стримы, заявки) —
+  типизированная ошибка `UNSUPPORTED_CAPABILITY`, неизвестный символ —
+  `UNKNOWN_SYMBOL` ещё до вызова провайдера.
+
+### Диагностические funding и mark (перпетуалы Binance)
+
+Только при явном флаге `-crypto-mode=diagnostic` единственный GET-эндпоинт принимает
+`candle_type=funding&completeness=reconciled&diagnostic_only=true` для `venue=binance`,
+`symbol=BTC/USDT:USDT` и `timeframe=8h`; обычные `window`, `limit` и
+`include_incomplete=false` остаются обязательными. Ответ содержит типизированные
+`funding_events` и диагностические метки в `series`.
+
+Закреплён только архив funding за январь 2024 — остальные месяцы
+[fail-closed](DOC/terms/reliability.md#fail-closed). Нужны одновременно закреплённый
+архив и совпадающие наблюдения API: отсутствующий пин, расхождение источников,
+пустое окно или превышение лимита — отказ. Сверка двух источников — это согласие
+диагностики, **а не доказательство полноты**; идентичность серии `8h` не утверждает,
+что интервал каждого события равен 8 часам — брать `interval_h` из события.
+Кешированное покрытие записывается на сверенное окно запроса; его подокна
+переиспользуются без отдельной сверки и полноты не доказывают. При наличии пина
+исходящие запросы идут на `data.binance.vision` и `fapi.binance.com`.
+Диагностический режим не отдаёт spot-свечи, fake-режим не меняется.
+
+Mark GET — `candle_type=mark&completeness=reconciled&diagnostic_only=true` с теми же
+venue и символом, `timeframe=1h`, окна по закрытым часам, лимит 1000. Закреплён только
+январь 2024, запрос обязан укладываться в один месяц. Закреплённый архив и независимое
+окно API обязаны совпасть; пустые, частичные, неизвестные или противоречивые данные —
+отказ. Сверенный результат — согласие диагностики, не полнота. Подокна кеша
+переиспользуются по сверенному покрытию. Не-владелец для funding по peer-пути
+получает отказ; mark идёт обычным candle-путём. Доступность live-сигнала из
+исторического времени платежа не выводится.
+
+## 7. Конфигурация
+
+Один YAML-файл (`-config`), секреты — только в переменных окружения,
+поведение провайдера — флагами командной строки. Конфиг читается
+[fail-closed](DOC/terms/reliability.md#fail-closed): неизвестное поле, пропущенное
+обязательное значение или нарушенный инвариант — сервис не стартует и
+пишет причину. «Тихих» значений по умолчанию для production нет.
+
+| Файл | Назначение |
+|---|---|
+| [config/gateway.local.example.yaml](config/gateway.local.example.yaml) | рабочий локальный конфиг: один узел, loopback, fake-провайдер |
+| [config/gateway.example.yaml](config/gateway.example.yaml) | справочник схемы для кластера: каждое `REQUIRED_*` нужно заменить измеренным и проверенным значением, иначе сервис не стартует |
+
+### Блоки конфига
+
+**`cluster` — узел и топология**
+
+| Поле | Смысл |
+|---|---|
+| `cluster_id`, `node_id` | имя кластера и этого узла; `node_id` обязан быть в `nodes` |
+| `routing_version` | положительная версия маршрутизации, соль [rendezvous-хеша](DOC/terms/cluster.md#weighted-rendezvous-hashing); смена версии — контролируемое перераспределение серий |
+| `nodes[]` | `id`, `weight` (доля серий), `peer_url` (приватный адрес peer API); `peer_url` уникальны |
+| `failover_mode` | `manual` (по умолчанию): к провайдеру ходит только primary. `automatic`: standby забирает серию через [fencing-аренду](DOC/terms/cluster.md#fencing-токен) |
+| `witnesses[]` | `id`, `peer_url` — [свидетели](DOC/terms/cluster.md#кворум-и-свидетели) кворума без данных; для `automatic` нужно не меньше двух (кворум ≥ 3 участников) |
+
+**`listeners` — адреса**
+
+| Поле | Смысл |
+|---|---|
+| `client` | клиентский API; **только loopback** — наружу шлюз выставляется через MCP-слой или прокси |
+| `peer` | peer API; приватный адрес, совпадающий с хостом своего `peer_url`. Loopback разрешён только для одного узла в режиме `manual` без свидетелей |
+
+**`auth` — кто допущен**
+
+| Поле | Смысл |
+|---|---|
+| `node_token_env` | имя переменной окружения с общим секретом узлов для peer API (обязательно) |
+| `clients[]` | необязательный allowlist клиентов: `id`, `token_env`, `priority` (`live_refresh` или `warmup`). Идентичность и [приоритет](DOC/terms/load.md#приоритеты) берутся из bearer-токена, а не из заголовков — клиент не может сам себе поднять приоритет |
+
+**`providers.tbank` — бюджет брокера**
+
+| Поле | Смысл |
+|---|---|
+| `credential_group` | несекретное имя группы учётных данных, делящей один лимит брокера |
+| `token_env` | имя переменной с токеном T-Bank (сам токен в конфиг не попадает) |
+| `safe_budget_per_minute` | измеренный безопасный лимит вызовов в минуту на всю группу |
+| `node_hard_budget_per_minute` | доля этого узла; обязана совпадать с его записью в карте ниже |
+| `node_hard_budgets_per_minute` | карта `node_id → доля` для каждого участника; одинаковая на всех узлах. Инвариант: `sum(долей) ≤ safe_budget_per_minute` |
+
+**`limits` — пределы и поведение кеша**
+
+| Поле | Смысл |
+|---|---|
+| `request_timeout_ms` | предел одного запроса, включая peer-хоп и фоновое обновление |
+| `max_request_limit` | максимум свечей в одном запросе (MCP-серверу нужно ≥ 500) |
+| `max_batch_items`, `batch_fan_out` | размер [батча](DOC/terms/load.md#батч-и-fan-out) и параллелизм его позиций |
+| `cache_retention_ms` | срок хранения в SQLite и одновременно максимальный возраст, при котором устаревший ответ ещё `stale_acceptable` |
+| `storage_path` | путь к SQLite-файлу [реплика-кеша](DOC/terms/cache.md#реплика-кеш) |
+| `queue_capacity`, `worker_count` | очередь и пул воркеров планировщика |
+| `max_retries`, `retry_base_delay_ms` | число повторов и база [backoff](DOC/terms/load.md#backoff) с [джиттером](DOC/terms/load.md#джиттер) |
+| `per_client_quota_per_minute`, `max_tracked_clients` | [квота клиента](DOC/terms/load.md#квота-клиента) и предел отслеживаемых клиентов |
+| `drain_timeout_ms` | сколько ждать доделки работы при остановке ([drain](DOC/terms/load.md#drain)) |
+| `lease_ttl_ms` | срок [аренды](DOC/terms/cluster.md#аренда) без продления; по умолчанию 30 000 |
+| `publication_grace_ms` | [грейс публикации](DOC/terms/candles.md#грейс-публикации) свежезакрытой свечи; 0 — выключен |
+| `max_refresh_attempts_per_epoch` | лимит обновлений серии за [эпоху](DOC/terms/candles.md#эпоха-обновления); 0 — по умолчанию 2 |
+
+Все поля `limits`, кроме трёх последних, обязательны и должны быть положительными.
+
+**Необязательные блоки**
+
+| Блок | Поля | Смысл |
+|---|---|---|
+| `warmup` | `enabled`, `timeframes` (`1m`, `5m`, `15m`, `30m`, `1h`, `1d`), `series_per_minute`, `window_limit` (≤ `max_request_limit`) | [прогрев](DOC/terms/cache.md#прогрев) кеша после старта с заданным темпом |
+| `instrument_registry` | `refresh_interval_ms` | период перечитывания реестра инструментов для [ролла](DOC/terms/market.md#ролл) без рестарта; 0 — только при старте. Работает вместе с `-tbank-instruments-file` |
+| `capacity_plan` | `mode` (`off` / `shadow` / `enforce`), `credential_group`, `gateway_count`, `target_utilization`, `retry_factor`, `workloads[]` (`timeframe`, `instruments`, `requests_per_candle`, `freshness_sla_ms`, `source`) | [прогноз ёмкости](DOC/terms/load.md#capacity-plan); в `enforce` вселенная `workloads` должна совпасть с `warmup`. Подробнее — [DOC/capacity_plan.md](DOC/capacity_plan.md) |
+
+Пример необязательных возможностей поверх локального конфига:
+
+```yaml
+auth:
+  node_token_env: GATEWAY_NODE_TOKEN
+  clients:
+    - id: freqtrade
+      token_env: GATEWAY_CLIENT_FREQTRADE_TOKEN
+      priority: live_refresh
+    - id: research
+      token_env: GATEWAY_CLIENT_RESEARCH_TOKEN
+      priority: warmup
+limits:
+  # ...обязательные поля...
+  publication_grace_ms: 3000
+  max_refresh_attempts_per_epoch: 2
+warmup:
+  enabled: true
+  timeframes: [1h, 1d]
+  series_per_minute: 60
+  window_limit: 500
+```
+
+### Флаги командной строки `gateway`
+
+| Флаг | Смысл |
+|---|---|
+| `-config` | путь к YAML-конфигу |
+| `-provider` | `fake` — локальная проверка; реальный T-Bank требует явного `-tbank-endpoint` |
+| `-tbank-endpoint` | `host:port` T-Bank Invest API; никогда не подставляется неявно |
+| `-tbank-instruments-file` | JSON-реестр инструментов: восстанавливается при старте, атомарно обновляется при ролле |
+| `-crypto-mode` | `fake` включает крипто-площадки для локальной проверки; пусто — выключены |
+| `-log-level` | `DEBUG`, `INFO` (по умолчанию), `WARN`, `ERROR` |
+| `-cleanup-once` | один проход очистки SQLite по `cache_retention_ms` и выход |
+
+### Переменные окружения
+
+| Переменная | Кто читает | Смысл |
+|---|---|---|
+| имя из `auth.node_token_env` (например `GATEWAY_NODE_TOKEN`) | gateway | общий секрет узлов для peer API |
+| имя из `providers.tbank.token_env` (например `TBANK_MARKET_DATA_TOKEN`) | gateway | токен T-Bank, только для чтения рыночных данных |
+| имена из `auth.clients[].token_env` | gateway | bearer-токены клиентов |
+| `MARKET_DATA_GATEWAY_URL`, `MARKET_DATA_GATEWAY_TOKEN` | gateway-mcp | адрес шлюза и токен клиента |
+| `GATEWAY_MCP_TOKEN` | gateway-mcp | bearer для HTTP-транспорта MCP |
+
+Секреты не пишутся ни в конфиг, ни в логи, ни в ответы API.
+
+### Что проверяется при старте
+
+- клиентский listener — loopback, peer — приватный адрес (для кластера — не loopback);
+- `node_id` есть в `nodes`, `peer_url` уникальны, адрес `peer` совпадает со своим `peer_url`;
+- бюджет: доля есть у каждого участника, сумма долей ≤ безопасного лимита, своя доля совпадает с картой;
+- `automatic` failover — не меньше двух свидетелей с приватными адресами;
+- приоритеты клиентов только `live_refresh` или `warmup`, таймфреймы прогрева из списка и без повторов;
+- `capacity_plan` в `enforce` — осуществимый план; иначе `/v1/ready` не станет готовым.
+
+---
+
+## Архитектурные принципы
+
+Решения, которые проходят через весь код:
+
+| Принцип | Как реализован |
+|---|---|
+| **[Fail-closed](DOC/terms/reliability.md#fail-closed)** | строгая YAML-схема: неизвестное поле, пропуск или небезопасный инвариант — сервис не стартует; нет кворума — нет вызова провайдера; чужая схема БД — отказ |
+| **[Честная деградация](DOC/terms/reliability.md#честная-деградация)** | устаревшие данные никогда не помечаются свежими; у каждой деградации — типизированная причина |
+| **Ограниченность всего** | очереди, воркеры, ретраи, отслеживаемые клиенты, эпохи, SWR — у всего фиксированный предел, нет неограниченной работы |
+| **Детерминизм** | владелец серии вычисляется одинаково на всех узлах без координации; golden-векторы в тестах |
+| **Минимум прав** | только чтение свечей; protobuf провайдера изолирован в `internal/provider/tbank`; секреты только из окружения, не в логах и не в конфиге |
+| **Тестируемость без сети** | fake-провайдер, инъекция времени и фетчеров; тесты не требуют токенов и внешних аккаунтов |
+
+---
+
+## Наблюдаемость
+
+Prometheus-метрики на `/v1/metrics` (без идентификаторов клиентов в метках):
+попадания и промахи по уровням кеша, присоединения к singleflight,
+отложенные и фоновые обновления, прогрев, состояние бюджета кластера
+(`gateway_cluster_budget_*`), реестр инструментов и экспирации
+(`gateway_registry_*`), возраст данных по источнику, прогноз ёмкости
+(`gateway_capacity_plan_*`). Структурные логи решений через `log/slog`.
+
+---
+
+## Качество
+
+- **211 тестовых функций** в 23 пакетах; golden-тесты маршрутизации и индикаторов.
+- `make test-race` — прогон с детектором гонок.
+- Smoke-тесты end-to-end: один узел, кластеры из 2 и 3 узлов, MCP по stdio,
+  упаковка, уровни логирования.
+- `make verify` = `gofmt` + `go vet` + тесты + smoke + MCP-smoke.
+
+---
+
+## Быстрый старт
+
+Без токена, VPN и root — fake-провайдер на loopback:
 
 ```bash
 make smoke
 ```
 
-This builds the binary, starts it with `-provider=fake` on `127.0.0.1:8088`
-using the committed local config [config/gateway.local.example.yaml](config/gateway.local.example.yaml),
-performs a synthetic candles request, checks the metrics endpoint, stops the
-process gracefully, and removes the temporary state file.
-
-Manual equivalent:
+Вручную:
 
 ```bash
 make build
-export GATEWAY_NODE_TOKEN=<any-non-empty-local-value>
+export GATEWAY_NODE_TOKEN=local-dev
 ./build/gateway -config config/gateway.local.example.yaml -provider=fake
-curl -s http://127.0.0.1:8088/v1/health
 curl -s 'http://127.0.0.1:8088/v1/candles?venue=tbank&symbol=SBER&timeframe=1m&from_utc_ms=0&to_utc_ms=180000&limit=500&include_incomplete=false'
 ```
 
-The real TBank provider requires `TBANK_MARKET_DATA_TOKEN` (or the configured
-`token_env`) plus an explicit `-tbank-endpoint`; it is never constructed
-implicitly. Secrets are read from the environment only and never appear in
-config files or logs.
+Реальный T-Bank требует `TBANK_MARKET_DATA_TOKEN` и явный `-tbank-endpoint` —
+неявно провайдер не создаётся никогда.
 
-## MCP server
-
-`cmd/mcp` (`build/gateway-mcp`) is a read-only [Model Context Protocol](https://modelcontextprotocol.io)
-server for AI agents. It is a thin client of the gateway client API
-(`/v1/candles`, `/v1/candles/batch`, `/v1/health`, `/v1/ready`) and never talks
-to upstream providers, so cache, singleflight and the budget guard stay in
-force. No order/execution calls, no writes. Indicators are pure functions in
-`internal/indicators` (Wilder ATR/ADX, EMA, realized vol) with golden tests.
-
-| Tool | Input | Output (structured) |
-|---|---|---|
-| `get_candles` | `venue` (default `tbank`), `symbol`, `timeframe`, `lookback` (bars, default 100) or `from`/`to` (ISO-8601), `limit` ≤ 1000 | OHLCV rows (decimal strings), `freshness`, `incomplete` |
-| `get_volatility` | `venue`, `symbol`, `timeframe`, `window` (default 14), `lookback` (default 200), `periods_per_year` (default 365 d / timeframe) | ATR, ATR % of price, realized vol (per bar and annualized by √`periods_per_year`), ATR percentile in lookback, `label` `low` (< 25) / `normal` / `high` (> 75) |
-| `get_trend` | `venue`, `symbol`, `timeframe` | EMA 20/50/200, EMA20 slope, ADX(14), price vs EMA200, `label` `up`/`down`/`flat` (flat if ADX < 20), `strength` `strong` if ADX ≥ 25 |
-| `market_snapshot` | `symbols[]` (≤ 20), `venue`, `timeframe` | per symbol: last close, change %, volatility and trend labels (one `/v1/candles/batch` call; on an unregistered symbol, one call per symbol) — or a per-symbol typed `error` |
-| `gateway_status` | — | health, ready, build, node id, venues, timeframes |
-
-The server reads at most 500 bars per gateway request (168 for `1h`, the
-gateway's 7-day window), so the gateway's `limits.max_request_limit` must be
-at least 500. Annualized realized vol defaults to calendar time (365 days), which
-overstates it for session-traded venues; pass `periods_per_year` (e.g. 252
-for MOEX `1d`) for a trading-day convention.
-
-Prompt: `market_brief(symbol, timeframe[, venue])` asks the model to call
-`get_trend` + `get_volatility` and write a short summary. The exact label
-rules are part of each tool description. Errors are MCP tool errors
-(`isError: true`) whose text starts with a typed code: `INVALID_REQUEST`,
-`UNKNOWN_SYMBOL`, `GATEWAY_UNAVAILABLE`, `INSUFFICIENT_DATA`, or any gateway
-error code.
-
-Configuration (environment only; secrets are never logged or returned):
-
-| Variable / flag | Meaning |
+| Команда | Что делает |
 |---|---|
-| `-gateway-url` / `MARKET_DATA_GATEWAY_URL` | gateway client API base URL (default `http://127.0.0.1:8088`) |
-| `MARKET_DATA_GATEWAY_TOKEN` | optional bearer sent to the gateway (client identity allowlist) |
-| `-transport` | `stdio` (default) or `http` (Streamable HTTP at `/mcp`) |
-| `-listen` | HTTP listen address, default `127.0.0.1:8090`; literal loopback or private (RFC 1918) IP only |
-| `GATEWAY_MCP_TOKEN` | bearer token required by the HTTP transport |
+| `make build` | бинарники `build/gateway`, `build/gateway-mcp` |
+| `make test` / `make test-race` | тесты / с детектором гонок |
+| `make smoke` / `make mcp-smoke` | end-to-end на fake-провайдере |
+| `make verify` | полный набор проверок |
 
-### stdio (local agents)
+Все настройки, флаги и переменные окружения — в разделе [Конфигурация](#7-конфигурация).
 
-Claude Code:
+---
 
-```bash
-claude mcp add market-data -e MARKET_DATA_GATEWAY_URL=http://127.0.0.1:8088 -- /path/to/build/gateway-mcp
+## Структура репозитория
+
+```text
+cmd/
+  gateway/          сервис шлюза
+  mcp/              MCP-сервер для AI-агентов
+  tbank-recorder/   read-only запись сделок и стакана L2 в часовые gzip JSONL
+internal/
+  httpapi/  service/  cache/  storage/       путь запроса и кеш
+  ratelimit/  budget/  capacity/            допуск и бюджет
+  routing/  cluster/  peerapi/  lease/  auth/   кластер и failover
+  provider/{tbank,crypto,fake}              провайдеры
+  indicators/  observability/  config/  model/  apperror/
+DOC/                                        проектные документы и ADR
 ```
 
-Codex (`~/.codex/config.toml`):
+---
 
-```toml
-[mcp_servers.market-data]
-command = "/path/to/build/gateway-mcp"
-env = { MARKET_DATA_GATEWAY_URL = "http://127.0.0.1:8088" }
-```
+## Документы
 
-OpenCode (`opencode.json`):
+- [DOC/terms/](DOC/terms/README.md) — **словарь терминов**: кеш, свечи, нагрузка, кластер, протоколы, рынок
+- [DOC/market_data_gateway_failover.md](DOC/market_data_gateway_failover.md) — контракт автоматического failover и fault-тесты
+- [DOC/capacity_plan.md](DOC/capacity_plan.md) — режимы capacity plan
+- [DOC/adr/ADR-007-capacity-planning.md](DOC/adr/ADR-007-capacity-planning.md) — модель бюджета группы учётных данных
+- [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
-```json
-{
-  "mcp": {
-    "market-data": {
-      "type": "local",
-      "command": ["/path/to/build/gateway-mcp"],
-      "environment": { "MARKET_DATA_GATEWAY_URL": "http://127.0.0.1:8088" }
-    }
-  }
-}
-```
+---
 
-### Streamable HTTP (remote agents)
+## Статус и лицензия
 
-The HTTP transport refuses to start without `GATEWAY_MCP_TOKEN` or on a
-public / hostname address (same fail-closed rule as the peer API); a missing or
-wrong bearer token gets `401`.
+Инфраструктурный код, выделенный для портфолио; API и конфигурация могут
+меняться. Это не готовый финансовый продукт и без SLA. Торговых операций нет
+по замыслу.
 
-```bash
-export GATEWAY_MCP_TOKEN=<random secret>
-./build/gateway-mcp -transport=http -listen=10.0.0.5:8090 -gateway-url http://127.0.0.1:8088
-# client: POST http://10.0.0.5:8090/mcp with "Authorization: Bearer $GATEWAY_MCP_TOKEN"
-claude mcp add --transport http market-data http://10.0.0.5:8090/mcp --header "Authorization: Bearer $GATEWAY_MCP_TOKEN"
-```
-
-`make mcp-smoke` starts the fake gateway and the MCP server over stdio, runs
-`tools/list` and one `get_volatility` call, and requires a clean exit (no
-token, loopback only). It is part of `make verify`.
-
-## Configuration
-
-`config/gateway.local.example.yaml` is a fully concrete single-node loopback
-config for local development. `config/gateway.example.yaml` is a
-non-deployable schema reference: every `REQUIRED_*` placeholder is fail-closed
-and the gateway refuses to start without reviewed concrete values.
-
-Peer-boundary invariant: multi-node membership, automatic failover, and
-witnesses require private non-loopback peer addresses (fail-closed). The only
-loopback exception is the single-node manual-mode local scenario above.
-
-## Cluster mode
-
-- `internal/routing`: weighted rendezvous ownership over canonical SeriesKey, salted by routing_version; deterministic primary/standby on all nodes; pinned golden vectors in `table_test.go`.
-- `internal/auth`: node-credential domain for the peer boundary (constant-time, fail-closed when unconfigured).
-- `internal/cluster`: membership view + one-hop peer client (typed `ROUTING_VERSION_MISMATCH`/`NOT_OWNER`/auth errors, bounded deadlines, response-owner verification) and the same-owner batch call `FetchCandlesBatch` (per-item typed errors).
-- `internal/peerapi`: private peer handler (`/internal/v1/candles`, `/internal/v1/candles/batch`, `/internal/v1/node`); auth → cluster → hop → version → owner enforcement (per item for batches); never proxies (loops impossible).
-- `internal/budget`: per-credential-group cluster budget guard. Every node derives it from the identical canonical config; `sum(node_hard_budgets_per_minute) <= safe_budget_per_minute` is enforced at config load (unsafe config refuses to start) and again at runtime before every upstream call. A provider-observed budget shrink below the configured sum latches upstream work closed until restart. Configured/observed/blocked state is exported as `gateway_cluster_budget_*` metrics.
-- Batch: `POST /v1/candles/batch` partitions items by deterministic owner, runs local items through the normal singleflight `Get`, and sends one bounded peer sub-batch per remote owner (`batch_fan_out` bounds parallelism). Per-item result/error/freshness is preserved; peer responses are committed as read-only replicas exactly like the single-request path; a failing owner group only marks its own items.
-- Failover: fencing-token lease per series key plus quorum confirmation; at most one upstream owner per series under crash, partition, or lease-store degradation — see [DOC/market_data_gateway_failover.md](DOC/market_data_gateway_failover.md).
-
-Cluster smoke targets (multi-node smokes bind peers to a discovered private
-IPv4 and clients to loopback): `make smoke-cluster2`, `make smoke-cluster3`,
-`make smoke-loglevel`, `make smoke-packaging`.
-
-## Storage and schema migrations
-
-The SQLite replica cache schema is owned by this repository:
-`internal/storage/migrations` holds the ordered, forward-only migration chain
-and a single `CurrentVersion`. On open, the gateway applies pending migrations
-transactionally, safely completes legacy databases, and refuses (fail-closed)
-any on-disk schema newer than the binary supports. There is no operational
-config knob for the schema version — pinning a gateway version pins its schema.
-
-## Capacity planning
-
-The optional `capacity_plan` switch is documented in [DOC/capacity_plan.md](DOC/capacity_plan.md).
-`off` preserves runtime behavior, `shadow` forecasts without side effects, and
-`enforce` fail-closes startup/readiness for an invalid or infeasible reviewed
-plan. The existing scheduler remains the real-time admission authority.
-
-## Design docs
-
-- [DOC/market_data_gateway_failover.md](DOC/market_data_gateway_failover.md) — automatic failover contract and fault tests.
-- [DOC/capacity_plan.md](DOC/capacity_plan.md) — capacity-plan switch semantics.
-- [DOC/adr/ADR-007-capacity-planning.md](DOC/adr/ADR-007-capacity-planning.md) — credential-group budget model.
-
-## Futures support and capability boundary (F20)
-
-The gateway serves **candles only** from the TBank market-data surface
-(`MarketDataService.GetCandles`; its `instrument_id` accepts both a share FIGI
-and a physical futures contract `instrument_uid`, so futures need no order or
-trading capability). Everything else a TBank account can do — orderbooks,
-trade/quote streams, last prices, instrument metadata lookups, and any order
-or sandbox RPC — stays with **direct TBank consumers** and is never proxied
-through the gateway. Silent fallback between sources is forbidden: an input
-outside the boundary fails with the typed `UNSUPPORTED_CAPABILITY` error
-(`internal/provider/tbank/capabilities.go`), never an empty response; an
-unregistered symbol fails with `UNKNOWN_SYMBOL` before any provider call.
-
-Futures identity contract:
-
-- Series identity is the **physical provider instrument UID** (per expiry),
-  never the logical alias: `model.SeriesKey` keys cache/SQLite by
-  venue|market|UID|timeframe|candle, so different expiries are different series
-  and a contract's history is never mixed with or rewritten by its successor.
-  Diagnostic series append `|completeness|diagnostic_only` in that fixed
-  order; unlabeled series retain the five-field identity. Funding/mark
-  diagnostic identities are restricted to Binance futures with native USDT
-  symbols. `reconciled` does not prove completeness; `unknown` is refused.
-  Production funding and mark GET are limited to independently pinned archives reconciled against the API.
-  The storage schema version stays owned by the migration chain; the response
-  envelope carries its own `schema_version`.
-- A logical alias (for example a rolling `GOLD` ticker) is a **resolution
-  input only**: within one registry snapshot it targets exactly one physical
-  contract, and an alias declared on two contracts is a fail-closed
-  ambiguous-alias configuration error.
-- Responses carry explicit `instrument` metadata (`instrument_type`,
-  canonical physical symbol, provider-id kind, `price_unit` — `points` for
-  futures / `currency` for shares, `volume_unit` — `lots`, quote currency,
-  and the futures `expiration_utc_ms`) so downstream never reconstructs the
-  physical contract or its units from a ticker. Share responses gain the same
-  additive field with their series identity unchanged.
-
-Registry refresh and restart recovery (`-tbank-instruments-file`): the
-instrument mapping can be replaced atomically (validate the full candidate
-snapshot, persist it with a temp-file rename, then swap the in-memory mapping
-under lock); on restart the persisted file is recovered (missing file falls
-back to the compiled-in reviewed list; corrupt or foreign-schema files fail
-closed).
-
-With the same file configured plus a positive
-`instrument_registry.refresh_interval_ms`, a background refresher re-reads the
-file on that cadence and applies changed snapshots at runtime — no restart
-needed for a futures roll. A corrupt or invalid candidate is rejected with a
-warning and the currently served mapping stays untouched; a missing file is a
-no-op (the file never silently rolls the mapping back); every applied refresh
-is durably persisted (normalized temp-file rename), increments
-`gateway_registry_refreshes_total`, and re-records the registry gauge set.
-Without a registry file the compiled-in list is served and refresh is refused.
-The compiled-in production list carries the reviewed physical GOLD-12.26
-contract (verified against live TBank by the read-only F20 online DoD: candles
-via `instrument_id` UID, prices in points, integer lot volume); synthetic
-futures instruments exist only in tests (guard-pinned).
-
-F20 metrics: `gateway_registry_instruments` and
-`gateway_registry_active_contract_expiry_epoch_seconds` (active physical
-contracts), `gateway_registry_refreshes_total` /
-`gateway_registry_schema_version` (registry updates and schema),
-`gateway_series_cache_source_total` (cache source by market type), and
-`gateway_series_source_age_seconds` (fetch-provenance age, separate from the
-market-age gauge).
-
-## Project status
-
-Infrastructure code extracted for portfolio use; API and configuration may
-change. This is not a finished financial product and carries no SLA. There is
-no execution/order functionality by design.
-
-## License
-
-The source in this repository is publicly readable but is **not** provided
-under an open-source license: no rights to reuse, modify, or redistribute are
-granted automatically. Third-party generated protocol bindings carry their own
-attribution — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Исходный код открыт для чтения, но **не распространяется под открытой
+лицензией**: права на повторное использование, изменение и распространение
+автоматически не предоставляются. Сгенерированные привязки протокола T-Bank —
+со своей атрибуцией в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
