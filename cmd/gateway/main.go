@@ -699,16 +699,22 @@ func logFatal(message string) {
 	os.Exit(1)
 }
 
-// parseSeriesKey reverses model.SeriesKey.Identity() (venue|market|instrument|
-// timeframe|candle). It is used by the lease control plane to map a lease key
+// parseSeriesKey reverses model.SeriesKey.Identity(), including optional
+// diagnostic labels. It is used by the lease control plane to map a lease key
 // back to the SeriesKey the routing table needs to compute the deterministic
 // primary/standby owners.
 func parseSeriesKey(identity string) (model.SeriesKey, error) {
 	parts := strings.Split(identity, "|")
-	if len(parts) != 5 {
+	if len(parts) != 5 && len(parts) != 7 {
 		return model.SeriesKey{}, fmt.Errorf("invalid series identity %q", identity)
 	}
 	k := model.SeriesKey{Venue: parts[0], MarketType: parts[1], ProviderInstrumentID: parts[2], Timeframe: parts[3], CandleType: parts[4]}
+	if len(parts) == 7 {
+		if parts[6] != "true" {
+			return model.SeriesKey{}, fmt.Errorf("invalid series identity %q", identity)
+		}
+		k.Completeness, k.DiagnosticOnly = parts[5], true
+	}
 	if err := k.Validate(); err != nil {
 		return model.SeriesKey{}, err
 	}

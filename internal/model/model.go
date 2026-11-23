@@ -15,6 +15,8 @@ import (
 // and never participate in Identity().
 type SeriesKey struct {
 	Venue, MarketType, ProviderInstrumentID, Timeframe, CandleType string
+	Completeness                                                   string `json:"completeness,omitempty"`
+	DiagnosticOnly                                                 bool   `json:"diagnostic_only,omitempty"`
 }
 
 func (k SeriesKey) Validate() error {
@@ -23,11 +25,20 @@ func (k SeriesKey) Validate() error {
 			return fmt.Errorf("series key %s is required", name)
 		}
 	}
+	if k.Completeness != "" || k.DiagnosticOnly {
+		if (k.Completeness != "reconciled" && k.Completeness != "unknown") || !k.DiagnosticOnly || (k.CandleType != "funding" && k.CandleType != "mark") {
+			return fmt.Errorf("invalid diagnostic series labels")
+		}
+	}
 	return nil
 }
 
 func (k SeriesKey) Identity() string {
-	return strings.Join([]string{k.Venue, k.MarketType, k.ProviderInstrumentID, k.Timeframe, k.CandleType}, "|")
+	parts := []string{k.Venue, k.MarketType, k.ProviderInstrumentID, k.Timeframe, k.CandleType}
+	if k.Completeness != "" || k.DiagnosticOnly {
+		parts = append(parts, k.Completeness, fmt.Sprint(k.DiagnosticOnly))
+	}
+	return strings.Join(parts, "|")
 }
 
 // Instrument identity/unit vocabulary (F20 futures support). The physical
