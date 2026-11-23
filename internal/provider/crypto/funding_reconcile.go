@@ -13,7 +13,7 @@ type FundingAPIRate struct {
 	Rate string
 }
 
-// ReconcileFunding compares a fully read, pinned archive window with a fully
+// ReconcileFunding compares a fully read, pinned archive window with an
 // API window that was not truncated by its single-page limit. Matching sources
 // are diagnostic, not completeness proof.
 // The caller must establish that both sources were read across [fromMS,toMS).

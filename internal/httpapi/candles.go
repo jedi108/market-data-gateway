@@ -308,6 +308,11 @@ func (h *GatewayHandler) recordSeriesObservability(key model.SeriesKey, result s
 
 func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
 	query := r.URL.Query()
+	for _, candleType := range query["candle_type"] {
+		if candleType != "trade" {
+			return model.CandleRequest{}, apperror.New(apperror.CodeUnsupportedCapability, "requested candle type is not available", 0)
+		}
+	}
 	venue, symbol, timeframe := query.Get("venue"), query.Get("symbol"), query.Get("timeframe")
 	if venue == "" || symbol == "" || timeframe == "" {
 		return model.CandleRequest{}, apperror.New(apperror.CodeInvalidRequest, "venue, symbol, and timeframe are required", 0)

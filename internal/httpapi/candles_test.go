@@ -173,3 +173,22 @@ func TestDiagnosticSeriesHTTPEnvelopeAndUnknownCoverage(t *testing.T) {
 		t.Fatalf("invalid or unknown coverage reached provider: calls=%d", provider.calls.Load())
 	}
 }
+
+func TestParseRejectsUnimplementedCandleTypes(t *testing.T) {
+	h := &GatewayHandler{maxLimit: 10, resolve: func(venue, symbol, timeframe string) (model.SeriesKey, error) {
+		return model.SeriesKey{Venue: venue, MarketType: "spot", ProviderInstrumentID: symbol, Timeframe: timeframe, CandleType: "trade"}, nil
+	}}
+	base := "/v1/candles?venue=binance&symbol=BTCUSDT&timeframe=1m&from_utc_ms=0&to_utc_ms=60000&limit=1&include_incomplete=false"
+	for _, suffix := range []string{"&candle_type=mark", "&candle_type=funding", "&candle_type=markk", "&candle_type=trade&candle_type=funding", "&candle_type="} {
+		_, err := h.parse(httptest.NewRequest(http.MethodGet, base+suffix, nil))
+		var typed *apperror.Error
+		if !errors.As(err, &typed) || typed.Code != apperror.CodeUnsupportedCapability {
+			t.Errorf("%s: got %v", suffix, err)
+		}
+	}
+	for _, suffix := range []string{"", "&candle_type=trade"} {
+		if _, err := h.parse(httptest.NewRequest(http.MethodGet, base+suffix, nil)); err != nil {
+			t.Errorf("%s: %v", suffix, err)
+		}
+	}
+}
