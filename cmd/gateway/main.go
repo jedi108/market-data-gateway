@@ -322,22 +322,25 @@ func main() {
 }
 
 type cleanupReport struct {
-	Host            string                `json:"host"`
-	Database        string                `json:"database"`
-	CutoffUTCMS     int64                 `json:"cutoff_utc_ms"`
-	RetentionMS     int64                 `json:"retention_ms"`
-	CandlesBefore   int64                 `json:"candles_before"`
-	CandlesAfter    int64                 `json:"candles_after"`
-	CoverageBefore  int64                 `json:"coverage_before"`
-	CoverageAfter   int64                 `json:"coverage_after"`
-	DeletedCandles  int64                 `json:"deleted_candles"`
-	DeletedCoverage int64                 `json:"deleted_coverage"`
-	TrimmedCoverage int64                 `json:"trimmed_coverage"`
-	RemainingSeries int64                 `json:"remaining_series"`
-	Checkpoint      storage.WALCheckpoint `json:"wal_checkpoint"`
-	DurationMS      int64                 `json:"duration_ms"`
-	Error           string                `json:"error,omitempty"`
-	ExitCode        int                   `json:"exit_code"`
+	Host                 string                `json:"host"`
+	Database             string                `json:"database"`
+	CutoffUTCMS          int64                 `json:"cutoff_utc_ms"`
+	RetentionMS          int64                 `json:"retention_ms"`
+	CandlesBefore        int64                 `json:"candles_before"`
+	CandlesAfter         int64                 `json:"candles_after"`
+	FundingEventsBefore  int64                 `json:"funding_events_before"`
+	FundingEventsAfter   int64                 `json:"funding_events_after"`
+	DeletedFundingEvents int64                 `json:"deleted_funding_events"`
+	CoverageBefore       int64                 `json:"coverage_before"`
+	CoverageAfter        int64                 `json:"coverage_after"`
+	DeletedCandles       int64                 `json:"deleted_candles"`
+	DeletedCoverage      int64                 `json:"deleted_coverage"`
+	TrimmedCoverage      int64                 `json:"trimmed_coverage"`
+	RemainingSeries      int64                 `json:"remaining_series"`
+	Checkpoint           storage.WALCheckpoint `json:"wal_checkpoint"`
+	DurationMS           int64                 `json:"duration_ms"`
+	Error                string                `json:"error,omitempty"`
+	ExitCode             int                   `json:"exit_code"`
 }
 
 // runCleanupOnce is deliberately independent from provider, auth, HTTP, and
@@ -372,6 +375,9 @@ func runCleanupOnce(cfg config.Config) cleanupReport {
 		if err == nil {
 			report.CandlesBefore = stats.CandlesBefore
 			report.CandlesAfter = stats.CandlesAfter
+			report.FundingEventsBefore = stats.FundingEventsBefore
+			report.FundingEventsAfter = stats.FundingEventsAfter
+			report.DeletedFundingEvents = stats.DeletedFundingEvents
 			report.CoverageBefore = stats.CoverageBefore
 			report.CoverageAfter = stats.CoverageAfter
 			report.DeletedCandles = stats.DeletedCandles

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — fix(gateway): report funding retention (refs #1048)
+
+- Include funding event counts before, after, and deleted in cleanup reports.
+
 ## 2026-11-23 — fix(gateway): type funding archive failures (refs #1048)
 
 - Return typed coverage-unknown errors for rejected funding archives and assert typed service guards.

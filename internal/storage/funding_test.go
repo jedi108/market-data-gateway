@@ -47,7 +47,7 @@ func TestFundingRetentionRemovesOldEventsAndTrimsCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats, err := s.CleanupBeforeWithStats(200)
-	if err != nil || stats.DeletedFundingEvents != 2 {
+	if err != nil || stats.FundingEventsBefore != 3 || stats.FundingEventsAfter != 1 || stats.DeletedFundingEvents != 2 {
 		t.Fatalf("stats=%+v err=%v", stats, err)
 	}
 	snap, found, err := s.Get(key, 0, 300)

@@ -37,6 +37,8 @@ type Snapshot struct {
 type CleanupStats struct {
 	CandlesBefore        int64
 	CandlesAfter         int64
+	FundingEventsBefore  int64
+	FundingEventsAfter   int64
 	CoverageBefore       int64
 	CoverageAfter        int64
 	DeletedCandles       int64
@@ -402,6 +404,9 @@ func (s *Store) CleanupBeforeWithStats(cutoffUTCMS int64) (CleanupStats, error) 
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM candles").Scan(&stats.CandlesBefore); err != nil {
 		return stats, err
 	}
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM funding_events").Scan(&stats.FundingEventsBefore); err != nil {
+		return stats, err
+	}
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM coverage").Scan(&stats.CoverageBefore); err != nil {
 		return stats, err
 	}
@@ -484,6 +489,9 @@ func (s *Store) CleanupBeforeWithStats(cutoffUTCMS int64) (CleanupStats, error) 
 	}
 
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM candles").Scan(&stats.CandlesAfter); err != nil {
+		return stats, err
+	}
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM funding_events").Scan(&stats.FundingEventsAfter); err != nil {
 		return stats, err
 	}
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM coverage").Scan(&stats.CoverageAfter); err != nil {
