@@ -11,8 +11,9 @@ import (
 )
 
 type Entry struct {
-	Candles []model.Candle
-	Replica bool
+	Candles       []model.Candle
+	FundingEvents []model.FundingEvent
+	Replica       bool
 }
 
 // Range is a half-open UTC millisecond interval. Coverage is separate from
@@ -79,6 +80,9 @@ func (c *Cache) MergeCoverage(key model.SeriesKey, candles []model.Candle, cover
 	if err := key.Validate(); err != nil {
 		return err
 	}
+	if key.CandleType == "funding" {
+		return fmt.Errorf("funding requires typed events")
+	}
 	if len(candles) == 0 && len(coverage) == 0 {
 		return nil
 	}
@@ -116,9 +120,54 @@ func (c *Cache) MergeCoverage(key model.SeriesKey, candles []model.Candle, cover
 	return nil
 }
 
+// MergeFundingCoverage stores only reconciled diagnostic windows; it does not
+// assert completeness beyond independent source agreement.
+func (c *Cache) MergeFundingCoverage(key model.SeriesKey, events []model.FundingEvent, coverage []Range, replica bool) error {
+	if err := key.Validate(); err != nil {
+		return err
+	}
+	if key.CandleType != "funding" || key.Completeness != "reconciled" {
+		return fmt.Errorf("funding requires reconciled diagnostic series")
+	}
+	if len(events) == 0 {
+		return nil
+	}
+	for _, event := range events {
+		if err := event.Validate(); err != nil {
+			return err
+		}
+	}
+	for _, r := range coverage {
+		if err := r.Validate(); err != nil {
+			return err
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	old := c.entries[key.Identity()]
+	byTime := make(map[int64]model.FundingEvent)
+	for _, e := range old.FundingEvents {
+		byTime[e.Ts] = e
+	}
+	for _, e := range events {
+		byTime[e.Ts] = e
+	}
+	merged := make([]model.FundingEvent, 0, len(byTime))
+	for _, e := range byTime {
+		merged = append(merged, e)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Ts < merged[j].Ts })
+	resultReplica := old.Replica && replica
+	if len(old.FundingEvents) == 0 {
+		resultReplica = replica
+	}
+	c.entries[key.Identity()] = storedEntry{Entry: Entry{FundingEvents: merged, Replica: resultReplica}, Coverage: mergeRanges(old.Coverage, coverage)}
+	return nil
+}
+
 func (c *Cache) Get(key model.SeriesKey, from, to int64) (Entry, bool) {
 	result, err := c.Lookup(key, Range{FromUTCMS: from, ToUTCMS: to})
-	if err != nil || len(result.Entry.Candles) == 0 {
+	if err != nil || (len(result.Entry.Candles) == 0 && len(result.Entry.FundingEvents) == 0) {
 		return Entry{}, false
 	}
 	return result.Entry, true
@@ -142,6 +191,11 @@ func (c *Cache) Lookup(key model.SeriesKey, requested Range) (LookupResult, erro
 	for _, candle := range entry.Candles {
 		if candle.OpenTimeUTCMS >= requested.FromUTCMS && candle.CloseTimeUTCMS <= requested.ToUTCMS {
 			out.Candles = append(out.Candles, candle)
+		}
+	}
+	for _, event := range entry.FundingEvents {
+		if event.Ts >= requested.FromUTCMS && event.Ts < requested.ToUTCMS {
+			out.FundingEvents = append(out.FundingEvents, event)
 		}
 	}
 	missing := missingRanges(requested, entry.Coverage)

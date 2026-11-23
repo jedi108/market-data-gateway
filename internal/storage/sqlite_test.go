@@ -83,6 +83,9 @@ func TestLegacyV1DatabaseIsSafelyCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.db.Exec("UPDATE gateway_schema SET version = 1"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.db.Exec("DROP TABLE candles"); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +121,7 @@ func TestFailedMigrationLeavesPreviousVersion(t *testing.T) {
 	store.Close()
 
 	chain, err := migrations.BuildTestRegistry(migrations.Migration{
-		Version: 2,
+		Version: migrations.CurrentVersion() + 1,
 		Name:    "v2_test_failing",
 		Up: func(exec migrations.Executor) error {
 			if _, err := exec.Exec("CREATE TABLE v2_partial (id INTEGER PRIMARY KEY)"); err != nil {

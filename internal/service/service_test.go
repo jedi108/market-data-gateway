@@ -466,7 +466,7 @@ func TestDiagnosticEmptyRangeDoesNotBecomeCoverageOrStaleSuccess(t *testing.T) {
 	svc, store, scheduler := newService(t, t.TempDir()+"/cache.sqlite", upstream)
 	defer closeService(t, store, scheduler)
 	req := request(0, 180)
-	req.Series = model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1m", CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}
+	req.Series = model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "1m", CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}
 	if _, err := svc.Get(context.Background(), "diagnostic", ratelimit.PriorityLiveRefresh, req); err != nil {
 		t.Fatal(err)
 	}

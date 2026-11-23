@@ -56,7 +56,7 @@ func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
 	store.Close()
 
 	chain, err := migrations.BuildTestRegistry(migrations.Migration{
-		Version: 2,
+		Version: migrations.CurrentVersion() + 1,
 		Name:    "v2_test_probe_table",
 		Up: func(exec migrations.Executor) error {
 			_, err := exec.Exec("CREATE TABLE IF NOT EXISTS v2_probe (id INTEGER PRIMARY KEY)")

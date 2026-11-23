@@ -36,6 +36,7 @@ var production = []Migration{
 		Name:    "v1_baseline_series_candles_coverage",
 		Up:      upV1Baseline,
 	},
+	{Version: 2, Name: "v2_funding_events", Up: upV2FundingEvents},
 }
 
 // CurrentVersion is the schema version the production binary creates and
@@ -133,4 +134,14 @@ func upV1Baseline(exec Executor) error {
 		}
 	}
 	return nil
+}
+
+func upV2FundingEvents(exec Executor) error {
+	_, err := exec.Exec(`CREATE TABLE IF NOT EXISTS funding_events (
+        series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+        ts INTEGER NOT NULL, rate TEXT NOT NULL, interval_h INTEGER NOT NULL,
+        available_at INTEGER NOT NULL, availability TEXT NOT NULL,
+        PRIMARY KEY (series_id, ts)
+    )`)
+	return err
 }

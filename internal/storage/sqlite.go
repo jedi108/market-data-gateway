@@ -26,8 +26,9 @@ type Metadata struct {
 }
 
 type Snapshot struct {
-	Candles  []model.Candle
-	Metadata Metadata
+	Candles       []model.Candle
+	FundingEvents []model.FundingEvent
+	Metadata      Metadata
 }
 
 // CleanupStats is the sanitized operational result of one retention pass.
@@ -191,8 +192,16 @@ func (s *Store) Save(key model.SeriesKey, snapshot Snapshot) error {
 	if err := key.Validate(); err != nil {
 		return err
 	}
-	if len(snapshot.Candles) == 0 {
+	if (key.CandleType == "funding" && (len(snapshot.Candles) != 0 || key.Completeness != "reconciled")) || (key.CandleType != "funding" && len(snapshot.FundingEvents) != 0) {
+		return fmt.Errorf("invalid snapshot type")
+	}
+	if len(snapshot.Candles) == 0 && len(snapshot.FundingEvents) == 0 {
 		return nil
+	}
+	for _, event := range snapshot.FundingEvents {
+		if err := event.Validate(); err != nil {
+			return err
+		}
 	}
 	for _, candle := range snapshot.Candles {
 		if err := candle.Validate(); err != nil {
@@ -249,6 +258,11 @@ func (s *Store) Save(key model.SeriesKey, snapshot Snapshot) error {
 			return err
 		}
 	}
+	for _, event := range snapshot.FundingEvents {
+		if _, err := tx.Exec(`INSERT INTO funding_events(series_id, ts, rate, interval_h, available_at, availability) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(series_id, ts) DO UPDATE SET rate=excluded.rate, interval_h=excluded.interval_h, available_at=excluded.available_at, availability=excluded.availability`, seriesID, event.Ts, event.Rate, event.IntervalH, event.AvailableAt, event.Availability); err != nil {
+			return err
+		}
+	}
 	for _, interval := range snapshot.Metadata.Coverage {
 		if _, err := tx.Exec("INSERT INTO coverage(series_id, from_utc_ms, to_utc_ms) VALUES(?, ?, ?) ON CONFLICT DO NOTHING", seriesID, interval.FromUTCMS, interval.ToUTCMS); err != nil {
 			return err
@@ -293,6 +307,29 @@ func (s *Store) Get(key model.SeriesKey, fromUTCMS, toUTCMS int64) (Snapshot, bo
 	if err := rows.Err(); err != nil {
 		return Snapshot{}, false, err
 	}
+	if key.CandleType == "funding" {
+		eventRows, err := s.db.Query(`SELECT ts, rate, interval_h, available_at, availability FROM funding_events WHERE series_id = ? AND ts >= ? AND ts < ? ORDER BY ts`, seriesID, fromUTCMS, toUTCMS)
+		if err != nil {
+			return Snapshot{}, false, err
+		}
+		for eventRows.Next() {
+			var e model.FundingEvent
+			if err := eventRows.Scan(&e.Ts, &e.Rate, &e.IntervalH, &e.AvailableAt, &e.Availability); err != nil {
+				eventRows.Close()
+				return Snapshot{}, false, err
+			}
+			if err := e.Validate(); err != nil {
+				eventRows.Close()
+				return Snapshot{}, false, err
+			}
+			snapshot.FundingEvents = append(snapshot.FundingEvents, e)
+		}
+		err = eventRows.Err()
+		eventRows.Close()
+		if err != nil {
+			return Snapshot{}, false, err
+		}
+	}
 	coverageRows, err := s.db.Query("SELECT from_utc_ms, to_utc_ms FROM coverage WHERE series_id = ? AND to_utc_ms > ? AND from_utc_ms < ? ORDER BY from_utc_ms", seriesID, fromUTCMS, toUTCMS)
 	if err != nil {
 		return Snapshot{}, false, err
@@ -308,7 +345,7 @@ func (s *Store) Get(key model.SeriesKey, fromUTCMS, toUTCMS int64) (Snapshot, bo
 	if err := coverageRows.Err(); err != nil {
 		return Snapshot{}, false, err
 	}
-	return snapshot, len(snapshot.Candles) > 0, nil
+	return snapshot, len(snapshot.Candles) > 0 || len(snapshot.FundingEvents) > 0, nil
 }
 
 // StaleIfUpstreamError makes stale delivery explicit: callers must provide the

@@ -146,3 +146,14 @@ type FundingEvent struct {
 	AvailableAt  int64  `json:"available_at"`
 	Availability string `json:"availability"`
 }
+
+// Validate checks the historical funding representation without inventing a live availability time.
+func (e FundingEvent) Validate() error {
+	if e.Ts < 0 || e.IntervalH <= 0 || e.AvailableAt != e.Ts || e.Availability != "historical_payment_assumption" {
+		return fmt.Errorf("invalid funding event")
+	}
+	if _, ok := new(big.Rat).SetString(e.Rate); !ok {
+		return fmt.Errorf("invalid funding rate")
+	}
+	return nil
+}
