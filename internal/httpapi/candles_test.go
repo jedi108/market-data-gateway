@@ -135,8 +135,8 @@ func TestDiagnosticSeriesHTTPEnvelopeAndUnknownCoverage(t *testing.T) {
 		status   int
 		contains []string
 	}{
-		{"reconciled", 200, []string{`"completeness":"reconciled"`, `"diagnostic_only":true`, `"candles"`}},
-		{"unknown", 503, []string{`"error":"COVERAGE_UNKNOWN"`, `"retryable":false`}},
+		{"reconciled", 400, []string{`"error":"UNSUPPORTED_CAPABILITY"`}},
+		{"unknown", 400, []string{`"error":"UNSUPPORTED_CAPABILITY"`}},
 	} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/candles?venue=binance&symbol="+tc.symbol+"&timeframe=1m&from_utc_ms=0&to_utc_ms=60&limit=1&include_incomplete=false", nil))
@@ -169,7 +169,7 @@ func TestDiagnosticSeriesHTTPEnvelopeAndUnknownCoverage(t *testing.T) {
 			t.Fatalf("unlabeled %s GetBatch: %+v", candleType, items)
 		}
 	}
-	if provider.calls.Load() != 1 {
+	if provider.calls.Load() != 0 {
 		t.Fatalf("invalid or unknown coverage reached provider: calls=%d", provider.calls.Load())
 	}
 }

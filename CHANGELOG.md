@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — fix(gateway): guard diagnostic routing (refs #1048)
+
+- Reject mismatched candle identities, report funding upstream operations separately, and test diagnostic spot fail-closed behavior.
+
 ## 2026-11-23 — fix(gateway): reject unproven pins and nondecimal funding (refs #1048)
 
 - Fail closed without independently evidenced archive pins; validate funding rates as decimal strings and document diagnostic spot limitation.

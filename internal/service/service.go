@@ -615,7 +615,11 @@ func (s *Service) refresh(clientID string, priority ratelimit.Priority, request 
 		err := <-result
 		cancel()
 		s.recorder().InflightDec(request.Series.Venue, providerName)
-		s.recorder().RecordUpstream(providerName, request.Series.Venue, "get_candles", upstreamStatus(err), s.now().Sub(started))
+		operation := "get_candles"
+		if request.Series.CandleType == "funding" {
+			operation = "get_funding"
+		}
+		s.recorder().RecordUpstream(providerName, request.Series.Venue, operation, upstreamStatus(err), s.now().Sub(started))
 		if err != nil {
 			s.logWarn("upstream fetch failed", request.Series, "reason", upstreamStatus(err))
 			return &upstreamFailure{err: err}

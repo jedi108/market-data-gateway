@@ -360,6 +360,9 @@ func (h *GatewayHandler) parse(r *http.Request) (model.CandleRequest, error) {
 	if err != nil {
 		return model.CandleRequest{}, err
 	}
+	if !funding && key.CandleType != "trade" {
+		return model.CandleRequest{}, apperror.New(apperror.CodeUnsupportedCapability, "resolved candle type does not match request", 0)
+	}
 	if funding && (key.Validate() != nil || key.CandleType != "funding" || key.Completeness != "reconciled" || !key.DiagnosticOnly) {
 		return model.CandleRequest{}, apperror.New(apperror.CodeCoverageUnknown, "funding identity unavailable", 0)
 	}

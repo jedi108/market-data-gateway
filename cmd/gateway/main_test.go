@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"github.com/jedi108/market-data-gateway/internal/apperror"
 	"io"
 	"log/slog"
 	"testing"
@@ -36,5 +38,22 @@ func TestFakeCryptoModeKeepsBinanceSpotTrade(t *testing.T) {
 	candles, _, err := p.FetchCandles(context.Background(), model.CandleRequest{Series: key, FromUTCMS: now - 3600000, ToUTCMS: now, Limit: 1})
 	if err != nil || len(candles) != 1 {
 		t.Fatalf("spot trade candles %+v: %v", candles, err)
+	}
+}
+
+// Diagnostic mode must not return synthetic spot candles as real market data.
+func TestDiagnosticModeBinanceSpotFailsClosed(t *testing.T) {
+	key, err := resolver(nil)("binance", "BTC/USDT", "1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := buildProvider("fake", "diagnostic", config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = p.FetchCandles(context.Background(), model.CandleRequest{Series: key, FromUTCMS: 0, ToUTCMS: 3600000, Limit: 1})
+	var typed *apperror.Error
+	if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown {
+		t.Fatalf("expected coverage unknown, got %v", err)
 	}
 }
