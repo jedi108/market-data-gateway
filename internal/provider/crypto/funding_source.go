@@ -28,6 +28,27 @@ func NewBinanceFundingSource(client *http.Client) *BinanceFundingSource {
 }
 
 func (s *BinanceFundingSource) Fetch(ctx context.Context, symbol string, fromMS, toMS int64) ([]model.FundingEvent, error) {
+	if s == nil || s.client == nil || s.pin == nil || fromMS < 0 || toMS <= fromMS {
+		return nil, apperror.New(apperror.CodeCoverageUnknown, "funding source window unavailable or unreconciled", 0)
+	}
+	var result []model.FundingEvent
+	for start := fromMS; start < toMS; {
+		month := time.UnixMilli(start).UTC()
+		next := time.Date(month.Year(), month.Month()+1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+		if next <= start || next > toMS {
+			next = toMS
+		}
+		events, err := s.fetchMonth(ctx, symbol, start, next, start != fromMS)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, events...)
+		start = next
+	}
+	return result, nil
+}
+
+func (s *BinanceFundingSource) fetchMonth(ctx context.Context, symbol string, fromMS, toMS int64, additional bool) ([]model.FundingEvent, error) {
 	unknown := func() ([]model.FundingEvent, error) {
 		return nil, apperror.New(apperror.CodeCoverageUnknown, "funding source window unavailable or unreconciled", 0)
 	}
@@ -46,6 +67,11 @@ func (s *BinanceFundingSource) Fetch(ctx context.Context, symbol string, fromMS,
 	}
 	if err := ratelimit.RequireScheduledAttempt(ctx); err != nil {
 		return nil, err
+	}
+	if additional {
+		if err := ratelimit.ChargeAdditionalAttempt(ctx); err != nil {
+			return nil, err
+		}
 	}
 	archivePath := "/data/futures/um/monthly/fundingRate/" + url.PathEscape(symbol) + "/" + url.PathEscape(symbol+"-fundingRate-"+month+".zip")
 	fetch := func(address string, max int64) ([]byte, error) {
