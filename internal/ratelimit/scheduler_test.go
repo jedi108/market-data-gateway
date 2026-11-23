@@ -239,3 +239,57 @@ func TestSchedulerSnapshotReportsQueueBudgetAndClients(t *testing.T) {
 	}
 	shutdownTestScheduler(t, s)
 }
+
+func TestChargeAdditionalAttemptRespectsBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		node, client int
+		want         error
+	}{
+		{"node", 2, 10, ErrNodeBudget}, {"client", 10, 2, ErrClientQuota},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.NodeBudgetPerMinute = tc.node
+			cfg.PerClientQuotaPerMinute = tc.client
+			s := NewScheduler(cfg)
+			defer shutdownTestScheduler(t, s)
+			attempts := 0
+			done, err := s.Submit(context.Background(), "client", PriorityLiveRefresh, func(ctx context.Context) error {
+				attempts++ // first reservation belongs to Submit
+				if err := ChargeAdditionalAttempt(ctx); err != nil {
+					return err
+				}
+				attempts++
+				if err := ChargeAdditionalAttempt(ctx); err != nil {
+					return err
+				}
+				attempts++
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = <-done; !errors.Is(err, tc.want) {
+				t.Fatalf("got %v want %v", err, tc.want)
+			}
+			if attempts != 2 {
+				t.Fatalf("attempts=%d", attempts)
+			}
+			s.mu.Lock()
+			used := len(s.node.times)
+			s.mu.Unlock()
+			if used != 2 {
+				t.Fatalf("node budget used=%d", used)
+			}
+		})
+	}
+	if err := ChargeAdditionalAttempt(context.Background()); err == nil {
+		t.Fatal("unscheduled attempt accepted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ChargeAdditionalAttempt(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context: %v", err)
+	}
+}

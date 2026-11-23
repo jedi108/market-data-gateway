@@ -332,6 +332,22 @@ func (s *Scheduler) popLocked() job {
 	return current
 }
 
+type additionalAttemptKey struct{}
+
+// ChargeAdditionalAttempt reserves budget for an additional upstream request
+// made by the current scheduled operation. The first request is already charged
+// by Submit; callers must invoke this immediately before each later request.
+func ChargeAdditionalAttempt(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	charge, ok := ctx.Value(additionalAttemptKey{}).(func() error)
+	if !ok {
+		return errors.New("additional provider attempt outside scheduler")
+	}
+	return charge()
+}
+
 // execute runs one admitted job. The first provider attempt consumes the
 // reservation made at Submit time; every internal retry is charged immediately
 // before its attempt and is skipped when the budget cannot cover it, so the
@@ -344,6 +360,23 @@ func (s *Scheduler) execute(current job) (err error, attempted bool) {
 	defer cancel()
 	stop := context.AfterFunc(s.runCtx, cancel)
 	defer stop()
+	ctx = context.WithValue(ctx, additionalAttemptKey{}, func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := s.chargeRetryLocked(current.clientID)
+		switch {
+		case errors.Is(err, ErrNodeBudget):
+			s.rejectedNodeBudget++
+		case errors.Is(err, ErrClientQuota):
+			s.rejectedClientQuota++
+		case errors.Is(err, ErrClientTrackingCapacity):
+			s.rejectedTracking++
+		}
+		return err
+	})
 
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
