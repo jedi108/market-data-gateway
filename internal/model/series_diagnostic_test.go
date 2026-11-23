@@ -50,3 +50,28 @@ func TestUnlabeledTradeSeriesRemainValid(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnosticSeriesRequiresBinanceFutures(t *testing.T) {
+	for _, candleType := range []string{"funding", "mark"} {
+		for _, completeness := range []string{"reconciled", "unknown"} {
+			for _, pair := range []struct {
+				venue, market string
+				valid         bool
+			}{
+				{"binance", "futures", true}, {"tbank", "futures", false},
+				{"binance", "spot", false}, {"tbank", "spot", false},
+			} {
+				key := SeriesKey{Venue: pair.venue, MarketType: pair.market, ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: candleType, Completeness: completeness, DiagnosticOnly: true}
+				if got := key.Validate() == nil; got != pair.valid {
+					t.Errorf("%+v: valid=%v, want %v", key, got, pair.valid)
+				}
+			}
+		}
+	}
+	for _, pair := range []struct{ venue, market string }{{"binance", "spot"}, {"tbank", "futures"}} {
+		key := SeriesKey{Venue: pair.venue, MarketType: pair.market, ProviderInstrumentID: "BTCUSDT", Timeframe: "1m", CandleType: "trade"}
+		if err := key.Validate(); err != nil {
+			t.Errorf("trade key %+v: %v", key, err)
+		}
+	}
+}

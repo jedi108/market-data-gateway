@@ -655,3 +655,52 @@ func TestPeerBatchAuthAndHopEnforced(t *testing.T) {
 		t.Fatalf("rejected batch envelopes must not reach the provider, calls=%d", got)
 	}
 }
+
+func TestPeerRejectsForeignDiagnosticSeries(t *testing.T) {
+	tc := newTestCluster(t, 1)
+	for _, candleType := range []string{"funding", "mark"} {
+		for _, pair := range []struct{ venue, market string }{{"tbank", "futures"}, {"binance", "spot"}} {
+			key := model.SeriesKey{Venue: pair.venue, MarketType: pair.market, ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: candleType, Completeness: "reconciled", DiagnosticOnly: true}
+			for _, batch := range []bool{false, true} {
+				var payload any
+				path := "/internal/v1/candles"
+				if batch {
+					path += "/batch"
+					payload = cluster.PeerBatchRequest{ClusterID: clusterID, SourceNodeID: "node-b", RoutingVersion: 1, HopCount: 1, Requests: []model.CandleRequest{{Series: key, FromUTCMS: 1, ToUTCMS: 2, Limit: 1}}}
+				} else {
+					payload = cluster.PeerCandlesRequest{ClusterID: clusterID, SourceNodeID: "node-b", RoutingVersion: 1, HopCount: 1, Series: key, FromUTCMS: 1, ToUTCMS: 2, Limit: 1}
+				}
+				body, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req, err := http.NewRequest(http.MethodPost, tc.nodes["node-a"].peer.URL+path, bytes.NewReader(body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer "+nodeToken)
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if batch {
+					var result cluster.PeerBatchResponse
+					if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+						t.Fatal(err)
+					}
+					if resp.StatusCode != http.StatusOK || len(result.Items) != 1 || result.Items[0].Error == nil || result.Items[0].Error.Code != string(apperror.CodeInvalidRequest) {
+						t.Errorf("batch %v: status=%d result=%+v", key, resp.StatusCode, result)
+					}
+				} else if resp.StatusCode != http.StatusBadRequest {
+					t.Errorf("single %v: status=%d", key, resp.StatusCode)
+				}
+				resp.Body.Close()
+			}
+		}
+	}
+	for _, n := range tc.nodes {
+		if got := n.provider.calls.Load(); got != 0 {
+			t.Errorf("node %s provider calls=%d", n.id, got)
+		}
+	}
+}

@@ -28,7 +28,7 @@ func (k SeriesKey) Validate() error {
 		}
 	}
 	if k.CandleType == "funding" || k.CandleType == "mark" || k.Completeness != "" || k.DiagnosticOnly {
-		if (k.Completeness != "reconciled" && k.Completeness != "unknown") || !k.DiagnosticOnly || (k.CandleType != "funding" && k.CandleType != "mark") {
+		if (k.Completeness != "reconciled" && k.Completeness != "unknown") || !k.DiagnosticOnly || (k.CandleType != "funding" && k.CandleType != "mark") || k.Venue != "binance" || k.MarketType != "futures" {
 			return fmt.Errorf("invalid diagnostic series labels")
 		}
 	}
