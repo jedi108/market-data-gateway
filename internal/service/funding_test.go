@@ -104,3 +104,47 @@ func TestFundingCachedResultOverLimitFailsClosed(t *testing.T) {
 		t.Fatal("cached limit rejection reached provider")
 	}
 }
+
+func TestFundingCachedEmptySubwindowFailsClosed(t *testing.T) {
+	store, err := storage.Open(t.TempDir() + "/cache.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := ratelimit.NewScheduler(ratelimit.Config{NodeBudgetPerMinute: 1000, PerClientQuotaPerMinute: 1000, MaxTrackedClients: 100, QueueCapacity: 100, WorkerCount: 2, MaxRetries: 0, RetryBaseDelay: time.Millisecond})
+	defer closeService(t, store, scheduler)
+	source := &fundingProvider{}
+	svc, err := New(cache.New(), store, source, scheduler, Config{RequestTimeout: time.Second, MaxStaleAge: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}
+	event := model.FundingEvent{Ts: 100, Rate: "0.001", IntervalH: 8, AvailableAt: 100, Availability: "historical_payment_assumption"}
+	if err := store.Save(key, storage.Snapshot{FundingEvents: []model.FundingEvent{event}, Metadata: storage.Metadata{Coverage: []storage.Interval{{FromUTCMS: 100, ToUTCMS: 200}}}}); err != nil {
+		t.Fatal(err)
+	}
+	full := model.CandleRequest{Series: key, FromUTCMS: 100, ToUTCMS: 200, Limit: 10}
+	if _, err := svc.Get(context.Background(), "test", ratelimit.PriorityLiveRefresh, full); err != nil {
+		t.Fatal(err)
+	}
+	request := model.CandleRequest{Series: key, FromUTCMS: 150, ToUTCMS: 200, Limit: 10}
+	for i := 0; i < 2; i++ {
+		if result, err := svc.Get(context.Background(), "test", ratelimit.PriorityLiveRefresh, request); err == nil {
+			t.Fatalf("empty cached subwindow accepted: %+v", result)
+		}
+	}
+	if source.calls != 0 {
+		t.Fatal("cached rejection reached provider")
+	}
+}
+
+func TestFundingPeerOwnerFailsClosed(t *testing.T) {
+	svc := &Service{}
+	req := model.CandleRequest{Series: model.SeriesKey{CandleType: "funding"}}
+	if _, err := svc.GetOwned(req); err == nil {
+		t.Fatal("peer funding silently loses events")
+	}
+	items := svc.GetOwnedBatch([]model.CandleRequest{req})
+	if len(items) != 1 || items[0].Error == nil {
+		t.Fatal("peer batch funding silently loses events")
+	}
+}

@@ -18,7 +18,7 @@ call during tests or startup validation.
 
 With the explicit `-crypto-mode=diagnostic` option, the single GET endpoint
 accepts `candle_type=funding&completeness=reconciled&diagnostic_only=true`
-for `venue=binance`, `symbol=BTC/USDT`, and `timeframe=8h`. The normal window,
+for `venue=binance`, `symbol=BTC/USDT:USDT`, and `timeframe=8h`. The normal window,
 limit and `include_incomplete=false` parameters remain required. The response
 has typed `funding_events` and diagnostic labels in `series`.
 

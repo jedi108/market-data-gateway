@@ -615,7 +615,7 @@ func resolver(tbankReg *tbankprovider.Registry) httpapi.Resolver {
 // diagnosticFundingResolver exposes only the explicitly pinned Binance USD-M
 // contract; it does not infer a futures identity from a spot registry entry.
 func diagnosticFundingResolver(venue, symbol, timeframe string) (model.SeriesKey, error) {
-	if venue != "binance" || symbol != "BTC/USDT" || timeframe != "8h" {
+	if venue != "binance" || symbol != "BTC/USDT:USDT" || timeframe != "8h" {
 		return model.SeriesKey{}, apperror.New(apperror.CodeCoverageUnknown, "funding identity unavailable", 0)
 	}
 	return model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: timeframe, CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}, nil

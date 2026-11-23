@@ -25,7 +25,7 @@ func (p *reconciledFundingProvider) FetchFunding(ctx context.Context, r model.Ca
 		return nil, err
 	}
 	p.calls.Add(1)
-	return []model.FundingEvent{{Ts: r.FromUTCMS, Rate: "0.00100", IntervalH: 8, AvailableAt: r.FromUTCMS, Availability: "historical_payment_assumption"}}, nil
+	return []model.FundingEvent{{Ts: r.FromUTCMS, Rate: "0.00100", IntervalH: 4, AvailableAt: r.FromUTCMS, Availability: "historical_payment_assumption"}, {Ts: r.FromUTCMS + 1, Rate: "0.00200", IntervalH: 8, AvailableAt: r.FromUTCMS + 1, Availability: "historical_payment_assumption"}}, nil
 }
 func TestGETReconciledFundingThroughScheduledCache(t *testing.T) {
 	store, err := storage.Open(t.TempDir() + "/cache.db")
@@ -53,7 +53,7 @@ func TestGETReconciledFundingThroughScheduledCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := "/v1/candles?venue=binance&symbol=BTC%2FUSDT&timeframe=8h&from_utc_ms=100&to_utc_ms=200&limit=10&include_incomplete=false&candle_type=funding"
+	base := "/v1/candles?venue=binance&symbol=BTC%2FUSDT%3AUSDT&timeframe=8h&from_utc_ms=100&to_utc_ms=200&limit=10&include_incomplete=false&candle_type=funding"
 	for _, suffix := range []string{"&completeness=unknown&diagnostic_only=true", "&completeness=reconciled&diagnostic_only=false", ""} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, base+suffix, nil))
@@ -71,7 +71,7 @@ func TestGETReconciledFundingThroughScheduledCache(t *testing.T) {
 			t.Fatalf("status %d: %s", w.Code, w.Body.String())
 		}
 		var body candleEnvelope
-		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || len(body.FundingEvents) != 1 || body.FundingEvents[0].Rate != "0.00100" || body.Series.Completeness != "reconciled" || !body.Series.DiagnosticOnly {
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || len(body.FundingEvents) != 2 || body.FundingEvents[0].Rate != "0.00100" || body.FundingEvents[0].IntervalH != 4 || body.FundingEvents[0].AvailableAt != 100 || body.FundingEvents[0].Availability != "historical_payment_assumption" || body.FundingEvents[1].IntervalH != 8 || body.FundingEvents[1].AvailableAt != 101 || body.FundingEvents[1].Availability != "historical_payment_assumption" || body.Series.Completeness != "reconciled" || !body.Series.DiagnosticOnly {
 			t.Fatalf("response %+v %v", body, err)
 		}
 	}

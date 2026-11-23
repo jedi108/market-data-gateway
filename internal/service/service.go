@@ -214,6 +214,9 @@ func (s *Service) Stop() {
 // is what makes loops structurally impossible. The work is bounded by the
 // configured request timeout so a dead source node cannot pin resources.
 func (s *Service) GetOwned(request model.CandleRequest) (cluster.OwnedResult, error) {
+	if request.Series.CandleType == "funding" {
+		return cluster.OwnedResult{}, apperror.New(apperror.CodeCoverageUnknown, "peer funding transport unavailable", 0)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
 	defer cancel()
 	result, err := s.Get(ctx, "peer-owner", ratelimit.PriorityLiveRefresh, request)
@@ -273,8 +276,8 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	}
 	memory = s.epochAwareLookup(request.Series, requested, memory)
 	if memory.Complete {
-		if request.Series.CandleType == "funding" && len(memory.Entry.FundingEvents) > request.Limit {
-			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result exceeds limit", 0)
+		if request.Series.CandleType == "funding" && (len(memory.Entry.FundingEvents) == 0 || len(memory.Entry.FundingEvents) > request.Limit) {
+			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result empty or exceeds limit", 0)
 		}
 		s.recordCandleAge(request.Series, memory.Entry.Candles)
 		s.logDebug("memory coverage complete", request.Series)
@@ -290,8 +293,8 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 	}
 	memory = s.epochAwareLookup(request.Series, requested, memory)
 	if memory.Complete {
-		if request.Series.CandleType == "funding" && len(memory.Entry.FundingEvents) > request.Limit {
-			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result exceeds limit", 0)
+		if request.Series.CandleType == "funding" && (len(memory.Entry.FundingEvents) == 0 || len(memory.Entry.FundingEvents) > request.Limit) {
+			return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result empty or exceeds limit", 0)
 		}
 		s.persistentHits.Add(1)
 		s.recordCandleAge(request.Series, memory.Entry.Candles)
@@ -416,8 +419,8 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 		s.logError("successful provider response left coverage incomplete", request.Series, "reason", "incomplete_coverage")
 		return Result{}, ErrIncompleteCoverage
 	}
-	if request.Series.CandleType == "funding" && len(memory.Entry.FundingEvents) > request.Limit {
-		return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result exceeds limit", 0)
+	if request.Series.CandleType == "funding" && (len(memory.Entry.FundingEvents) == 0 || len(memory.Entry.FundingEvents) > request.Limit) {
+		return Result{}, apperror.New(apperror.CodeCoverageUnknown, "funding result empty or exceeds limit", 0)
 	}
 	s.recordCandleAge(request.Series, memory.Entry.Candles)
 	result := s.memoryResult(request.Series, memory.Entry)

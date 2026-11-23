@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — fix(gateway): fail closed for funding edge cases (refs #1048)
+
+- Require the explicit BTC/USDT:USDT futures symbol; reject empty cached funding windows and peer funding transport, and verify 4h/8h HTTP event metadata.
+
 ## 2026-11-23 — fix(storage): retain funding events within cleanup horizon (refs #1048)
 
 - Apply SQLite retention to funding events while preserving the latest event per series and trimming coverage as before.
