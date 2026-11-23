@@ -193,3 +193,21 @@ func TestRecorderRegistryStateIsIdempotentSnapshotReplacement(t *testing.T) {
 		t.Fatalf("registry state was not replaced wholesale: %+v", third.Registry)
 	}
 }
+
+func TestRecorderDiagnosticSources(t *testing.T) {
+	r := NewRecorder()
+	r.RecordDiagnosticSource("funding", "refreshed")
+	r.RecordDiagnosticSource("mark", "memory_hit")
+	r.RecordDiagnosticSource("funding", "untrusted-source")
+	r.RecordDiagnosticSource("untrusted-type", "refreshed")
+	var out strings.Builder
+	r.Snapshot().WritePrometheus(&out)
+	for _, want := range []string{`gateway_diagnostic_series_cache_source_total{candle_type="funding",source="refreshed"} 1`, `gateway_diagnostic_series_cache_source_total{candle_type="funding",source="other"} 1`, `gateway_diagnostic_series_cache_source_total{candle_type="mark",source="memory_hit"} 1`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(out.String(), "untrusted") {
+		t.Fatal("unbounded label")
+	}
+}

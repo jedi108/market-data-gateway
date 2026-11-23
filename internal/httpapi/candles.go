@@ -296,6 +296,9 @@ func (h *GatewayHandler) recordSeriesObservability(key model.SeriesKey, result s
 		return
 	}
 	recorder.RecordSeriesSource(key.Venue, key.MarketType, string(result.CacheStatus))
+	if key.DiagnosticOnly {
+		recorder.RecordDiagnosticSource(key.CandleType, string(result.CacheStatus))
+	}
 	if result.SourceFetchedAtUTCMS > 0 {
 		if age := time.Now().UnixMilli() - result.SourceFetchedAtUTCMS; age >= 0 {
 			recorder.RecordSourceAge(key.Venue, key.Timeframe, float64(age)/1000)

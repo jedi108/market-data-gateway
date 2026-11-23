@@ -43,6 +43,7 @@ type inflightLabel struct{ Venue, Provider string }
 type integrityLabel struct{ Venue, Reason string }
 type ageLabel struct{ Venue, Timeframe string }
 type seriesSourceLabel struct{ Venue, MarketType, Source string }
+type diagnosticSourceLabel struct{ CandleType, Source string }
 type registryInstrumentLabel struct{ Venue, MarketType, InstrumentType, Symbol string }
 
 type latencyAccumulator struct {
@@ -52,17 +53,18 @@ type latencyAccumulator struct {
 
 // Recorder is safe for concurrent use.
 type Recorder struct {
-	mu           sync.Mutex
-	upstream     map[upstreamLabel]uint64
-	overflow     map[string]uint64 // status -> count past the series cap
-	latency      map[latencyLabel]latencyAccumulator
-	inflight     map[inflightLabel]int
-	integrity    map[integrityLabel]uint64
-	candleAge    map[ageLabel]float64
-	sourceAge    map[ageLabel]float64
-	seriesSource map[seriesSourceLabel]uint64
-	registry     *registryStateMetrics
-	capacity     *CapacityPlanMetrics
+	mu               sync.Mutex
+	upstream         map[upstreamLabel]uint64
+	overflow         map[string]uint64 // status -> count past the series cap
+	latency          map[latencyLabel]latencyAccumulator
+	inflight         map[inflightLabel]int
+	integrity        map[integrityLabel]uint64
+	candleAge        map[ageLabel]float64
+	sourceAge        map[ageLabel]float64
+	seriesSource     map[seriesSourceLabel]uint64
+	diagnosticSource map[diagnosticSourceLabel]uint64
+	registry         *registryStateMetrics
+	capacity         *CapacityPlanMetrics
 }
 
 // registryStateMetrics is the current instrument-registry gauge set (F20): the
@@ -94,14 +96,15 @@ func (r *Recorder) RecordCapacityPlan(group, mode, result string, forecast capac
 
 func NewRecorder() *Recorder {
 	return &Recorder{
-		upstream:     make(map[upstreamLabel]uint64),
-		overflow:     make(map[string]uint64),
-		latency:      make(map[latencyLabel]latencyAccumulator),
-		inflight:     make(map[inflightLabel]int),
-		integrity:    make(map[integrityLabel]uint64),
-		candleAge:    make(map[ageLabel]float64),
-		sourceAge:    make(map[ageLabel]float64),
-		seriesSource: make(map[seriesSourceLabel]uint64),
+		upstream:         make(map[upstreamLabel]uint64),
+		overflow:         make(map[string]uint64),
+		latency:          make(map[latencyLabel]latencyAccumulator),
+		inflight:         make(map[inflightLabel]int),
+		integrity:        make(map[integrityLabel]uint64),
+		candleAge:        make(map[ageLabel]float64),
+		sourceAge:        make(map[ageLabel]float64),
+		seriesSource:     make(map[seriesSourceLabel]uint64),
+		diagnosticSource: make(map[diagnosticSourceLabel]uint64),
 	}
 }
 
@@ -190,6 +193,21 @@ func (r *Recorder) RecordSeriesSource(venue, marketType, source string) {
 	r.seriesSource[label]++
 }
 
+// RecordDiagnosticSource counts served diagnostic series with fixed label values.
+func (r *Recorder) RecordDiagnosticSource(candleType, source string) {
+	if candleType != "funding" && candleType != "mark" {
+		return
+	}
+	switch source {
+	case "memory_hit", "persistent_hit", "miss", "refreshed", "singleflight_join":
+	default:
+		source = "other"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.diagnosticSource[diagnosticSourceLabel{CandleType: candleType, Source: source}]++
+}
+
 // RegistryInstrument is one physical instrument of a registry snapshot handed
 // to RecordRegistryState. Symbol is the registry canonical symbol (an
 // operator-reviewed constant); ExpirationUTCMS carries the physical futures
@@ -266,6 +284,10 @@ type SeriesSourceCounter struct {
 	Venue, MarketType, Source string
 	Value                     uint64
 }
+type DiagnosticSourceCounter struct {
+	CandleType, Source string
+	Value              uint64
+}
 type RegistryGauge struct {
 	Venue, MarketType, InstrumentType, Symbol string
 	Count                                     int
@@ -279,15 +301,16 @@ type RegistryStateSnapshot struct {
 
 // Snapshot is a deterministic point-in-time copy of every recorder family.
 type Snapshot struct {
-	Upstream     []UpstreamCounter
-	Latency      []LatencyAccumulator
-	Inflight     []InflightGauge
-	Integrity    []IntegrityCounter
-	CandleAge    []CandleAgeGauge
-	SourceAge    []CandleAgeGauge
-	SeriesSource []SeriesSourceCounter
-	Registry     *RegistryStateSnapshot
-	Capacity     *CapacityPlanMetrics
+	Upstream         []UpstreamCounter
+	Latency          []LatencyAccumulator
+	Inflight         []InflightGauge
+	Integrity        []IntegrityCounter
+	CandleAge        []CandleAgeGauge
+	SourceAge        []CandleAgeGauge
+	SeriesSource     []SeriesSourceCounter
+	DiagnosticSource []DiagnosticSourceCounter
+	Registry         *RegistryStateSnapshot
+	Capacity         *CapacityPlanMetrics
 }
 
 func (r *Recorder) Snapshot() Snapshot {
@@ -327,6 +350,9 @@ func (r *Recorder) Snapshot() Snapshot {
 	for label, value := range r.seriesSource {
 		snapshot.SeriesSource = append(snapshot.SeriesSource, SeriesSourceCounter{Venue: label.Venue, MarketType: label.MarketType, Source: label.Source, Value: value})
 	}
+	for label, value := range r.diagnosticSource {
+		snapshot.DiagnosticSource = append(snapshot.DiagnosticSource, DiagnosticSourceCounter{CandleType: label.CandleType, Source: label.Source, Value: value})
+	}
 	if r.registry != nil {
 		registry := &RegistryStateSnapshot{SchemaVersion: r.registry.SchemaVersion, Refreshes: r.registry.Refreshes, Instruments: make([]RegistryGauge, 0, len(r.registry.Instruments))}
 		for label, state := range r.registry.Instruments {
@@ -355,6 +381,9 @@ func (r *Recorder) Snapshot() Snapshot {
 	})
 	sort.Slice(snapshot.SeriesSource, func(i, j int) bool {
 		return snapshot.SeriesSource[i].Venue+"\x00"+snapshot.SeriesSource[i].MarketType+"\x00"+snapshot.SeriesSource[i].Source < snapshot.SeriesSource[j].Venue+"\x00"+snapshot.SeriesSource[j].MarketType+"\x00"+snapshot.SeriesSource[j].Source
+	})
+	sort.Slice(snapshot.DiagnosticSource, func(i, j int) bool {
+		return snapshot.DiagnosticSource[i].CandleType+"\x00"+snapshot.DiagnosticSource[i].Source < snapshot.DiagnosticSource[j].CandleType+"\x00"+snapshot.DiagnosticSource[j].Source
 	})
 	return snapshot
 }
@@ -406,6 +435,10 @@ func (s Snapshot) WritePrometheus(w io.Writer) {
 	fmt.Fprintln(w, "# TYPE gateway_series_cache_source_total counter")
 	for _, counter := range s.SeriesSource {
 		fmt.Fprintf(w, "gateway_series_cache_source_total{venue=%q,market_type=%q,source=%q} %d\n", counter.Venue, counter.MarketType, counter.Source, counter.Value)
+	}
+	fmt.Fprintln(w, "# TYPE gateway_diagnostic_series_cache_source_total counter")
+	for _, counter := range s.DiagnosticSource {
+		fmt.Fprintf(w, "gateway_diagnostic_series_cache_source_total{candle_type=%q,source=%q} %d\n", counter.CandleType, counter.Source, counter.Value)
 	}
 	if s.Registry != nil {
 		fmt.Fprintln(w, "# TYPE gateway_registry_instruments gauge")
