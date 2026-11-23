@@ -14,6 +14,22 @@ call during tests or startup validation.
 - **Deterministic cluster routing** (optional multi-node): weighted rendezvous ownership per canonical series, private peer API with node-to-node verification, quorum/fencing lease for automatic failover, cluster-wide budget guard.
 - **Providers**: TBank (generated gRPC bindings) and a deterministic fake provider for local development.
 
+## Reconciled funding diagnostics
+
+With the explicit `-crypto-mode=diagnostic` option, the single GET endpoint
+accepts `candle_type=funding&completeness=reconciled&diagnostic_only=true`
+for `venue=binance`, `symbol=BTC/USDT`, and `timeframe=8h`. The normal window,
+limit and `include_incomplete=false` parameters remain required. The response
+has typed `funding_events` and diagnostic labels in `series`.
+
+Only the BTCUSDT January 2024 funding archive is pinned. The gateway requires
+both the pinned archive and matching API observations; missing pins, conflicting
+sources, an empty window, or an over-limit result fail closed. Reconciliation is
+diagnostic agreement, **not proof of completeness**. The 8h series identity
+is not a claim that every event's interval is 8h; use each event's `interval_h`.
+Non-owner funding peer transport and mark GET are not implemented and fail
+closed. No live availability is inferred from the historical payment time.
+
 ## Requirements
 
 - Go 1.25+ (see `go.mod`), `CGO_ENABLED=0` supported and used in production builds.

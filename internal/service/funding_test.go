@@ -77,3 +77,30 @@ func TestFundingIncompleteWindowNeverUsesStaleSnapshot(t *testing.T) {
 		t.Fatal("partial funding served after upstream failure")
 	}
 }
+
+func TestFundingCachedResultOverLimitFailsClosed(t *testing.T) {
+	path := t.TempDir() + "/cache.db"
+	source := &fundingProvider{}
+	store, err := storage.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := ratelimit.NewScheduler(ratelimit.Config{NodeBudgetPerMinute: 1000, PerClientQuotaPerMinute: 1000, MaxTrackedClients: 100, QueueCapacity: 100, WorkerCount: 2, MaxRetries: 0, RetryBaseDelay: time.Millisecond})
+	defer closeService(t, store, scheduler)
+	svc, err := New(cache.New(), store, source, scheduler, Config{RequestTimeout: time.Second, MaxStaleAge: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}
+	events := []model.FundingEvent{{Ts: 100, Rate: "0.001", IntervalH: 8, AvailableAt: 100, Availability: "historical_payment_assumption"}, {Ts: 150, Rate: "0.002", IntervalH: 8, AvailableAt: 150, Availability: "historical_payment_assumption"}}
+	if err := store.Save(key, storage.Snapshot{FundingEvents: events, Metadata: storage.Metadata{Coverage: []storage.Interval{{FromUTCMS: 100, ToUTCMS: 200}}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.Get(context.Background(), "test", ratelimit.PriorityLiveRefresh, model.CandleRequest{Series: key, FromUTCMS: 100, ToUTCMS: 200, Limit: 1})
+	if err == nil {
+		t.Fatal("over-limit funding accepted")
+	}
+	if source.calls != 0 {
+		t.Fatal("cached limit rejection reached provider")
+	}
+}

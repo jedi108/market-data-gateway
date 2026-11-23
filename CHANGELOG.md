@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23 — test(gateway): verify diagnostic funding bounds (refs #1048)
+
+- Document the diagnostic GET restrictions and test identity and cached result limits.
+
 ## 2026-11-23 — feat(gateway): serve diagnostic funding GET (refs #1048)
 
 - Route explicitly labeled reconciled funding through scheduler, owner gate, cache and SQLite; enable a diagnostic Binance mode for the pinned BTCUSDT archive window. Non-owner peer funding and mark remain unavailable and fail closed.
