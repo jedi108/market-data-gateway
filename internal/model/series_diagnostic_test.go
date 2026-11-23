@@ -42,6 +42,17 @@ func TestDiagnosticSeriesIdentityAndMetadata(t *testing.T) {
 	}
 }
 
+func TestDiagnosticSeriesRejectsInverseAndNonUSDTProviderIDs(t *testing.T) {
+	for _, candleType := range []string{"funding", "mark"} {
+		for _, id := range []string{"BTCUSD_PERP", "BTCUSD", "BTCUSDC", "BTCBUSD", "USDT", "btcUSDT", "BTC/USDT:USDT"} {
+			key := SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: id, Timeframe: "1h", CandleType: candleType, Completeness: "reconciled", DiagnosticOnly: true}
+			if err := key.Validate(); err == nil {
+				t.Errorf("accepted %s ID %q", candleType, id)
+			}
+		}
+	}
+}
+
 func TestUnlabeledTradeSeriesRemainValid(t *testing.T) {
 	for _, market := range []string{"spot", "futures"} {
 		key := SeriesKey{Venue: "binance", MarketType: market, ProviderInstrumentID: "BTCUSDT", Timeframe: "1h", CandleType: "trade"}

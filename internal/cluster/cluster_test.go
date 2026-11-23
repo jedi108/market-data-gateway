@@ -704,3 +704,30 @@ func TestPeerRejectsForeignDiagnosticSeries(t *testing.T) {
 		}
 	}
 }
+
+// This exercises peer forwarding with the cluster fixture, not a production mark route.
+func TestPeerForwardsDiagnosticMarkSeries(t *testing.T) {
+	tc := newTestCluster(t, 1)
+	var key model.SeriesKey
+	for i := 0; i < 10000; i++ {
+		candidate := model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: fmt.Sprintf("BTC%dUSDT", i), Timeframe: "1m", CandleType: "mark", Completeness: "reconciled", DiagnosticOnly: true}
+		assignment, err := tc.nodes["node-a"].member.Table().Assign(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if assignment.Primary == "node-a" {
+			key = candidate
+			break
+		}
+	}
+	if key.ProviderInstrumentID == "" {
+		t.Fatal("no node-a key found")
+	}
+	result, err := tc.nodes["node-b"].svc.Get(context.Background(), "client", ratelimit.PriorityLiveRefresh, requestFor(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Replica || len(result.Candles) != 2 || tc.nodes["node-a"].provider.calls.Load() != 1 || tc.nodes["node-b"].provider.calls.Load() != 0 {
+		t.Fatalf("unexpected peer result: %+v", result)
+	}
+}
