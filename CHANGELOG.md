@@ -1,8 +1,12 @@
 # Changelog
 
+## 2026-11-23 — fix(gateway): address diagnostic review (refs #1048)
+
+- Guard missing funding sources, remove unreachable error handling, and cover incomplete mark HTTP requests.
+
 ## 2026-11-23 — feat(gateway): expose diagnostic mark GET (refs #1048)
 
-- Route pinned reconciled Binance mark windows through scheduled HTTP, cache and storage with fail-closed diagnostic identity.
+- Route pinned reconciled Binance mark windows through scheduled HTTP, cache and storage with fail-closed diagnostic identity. Mark uses the candle peer path; the earlier funding GET entry predates mark support.
 
 ## 2026-11-23 — docs(gateway): clarify diagnostic coverage (refs #1048)
 

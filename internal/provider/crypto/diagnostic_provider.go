@@ -26,7 +26,7 @@ func (p *DiagnosticProvider) FetchCandles(ctx context.Context, request model.Can
 }
 func (p *DiagnosticProvider) FetchFunding(ctx context.Context, request model.CandleRequest) ([]model.FundingEvent, error) {
 	key := request.Series
-	if key.Validate() != nil || key.CandleType != "funding" || key.Completeness != "reconciled" || request.IncludeIncomplete {
+	if key.Validate() != nil || key.CandleType != "funding" || key.Completeness != "reconciled" || request.IncludeIncomplete || p == nil || p.funding == nil {
 		return nil, apperror.New(apperror.CodeCoverageUnknown, "funding diagnostic unavailable", 0)
 	}
 	return p.funding.Fetch(ctx, key.ProviderInstrumentID, request.FromUTCMS, request.ToUTCMS)

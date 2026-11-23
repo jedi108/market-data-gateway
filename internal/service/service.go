@@ -367,10 +367,6 @@ func (s *Service) Get(ctx context.Context, clientID string, priority ratelimit.P
 		var upstream *upstreamFailure
 		if errors.As(refreshErr, &upstream) {
 			s.noteEpochOutcome(request.Series, upstream.err)
-			var typed *apperror.Error
-			if request.Series.DiagnosticOnly && errors.As(upstream.err, &typed) && typed.Code == apperror.CodeCoverageUnknown {
-				return Result{}, upstream.err
-			}
 			return s.staleOrError(request, upstream.err)
 		}
 		// Task 109: admission rejection degrades to the honest stale/fail-

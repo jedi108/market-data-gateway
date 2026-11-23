@@ -49,7 +49,7 @@ func TestGETReconciledFundingThroughScheduledCache(t *testing.T) {
 	resolve := func(venue, symbol, timeframe string) (model.SeriesKey, error) {
 		return model.SeriesKey{Venue: "binance", MarketType: "futures", ProviderInstrumentID: "BTCUSDT", Timeframe: "8h", CandleType: "funding", Completeness: "reconciled", DiagnosticOnly: true}, nil
 	}
-	h, err := NewGatewayHandlerWithIdentity("test", func() bool { return true }, svc, resolve, 10, 10, 1, WithFundingResolver(resolve))
+	h, err := NewGatewayHandlerWithIdentity("test", func() bool { return true }, svc, resolve, 10, 10, 1, WithFundingResolver(resolve), WithMarkResolver(resolve))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +61,13 @@ func TestGETReconciledFundingThroughScheduledCache(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusServiceUnavailable || body.Error != "COVERAGE_UNKNOWN" || body.Retryable {
 			t.Fatalf("invalid diagnostic %s: status=%d body=%s err=%v", suffix, w.Code, w.Body.String(), err)
 		}
+	}
+	w := httptest.NewRecorder()
+	markURL := "/v1/candles?venue=binance&symbol=BTCUSDT&timeframe=1h&from_utc_ms=0&to_utc_ms=3600000&limit=10&include_incomplete=true&candle_type=mark&completeness=reconciled&diagnostic_only=true"
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, markURL, nil))
+	var markError errorEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &markError); err != nil || w.Code != http.StatusServiceUnavailable || markError.Error != "COVERAGE_UNKNOWN" || markError.Retryable {
+		t.Fatalf("incomplete mark: status=%d body=%s err=%v", w.Code, w.Body.String(), err)
 	}
 	if source.calls.Load() != 0 {
 		t.Fatal("unknown reached upstream")
