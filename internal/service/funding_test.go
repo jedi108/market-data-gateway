@@ -8,6 +8,7 @@ import (
 	"github.com/jedi108/market-data-gateway/internal/model"
 	"github.com/jedi108/market-data-gateway/internal/ratelimit"
 	"github.com/jedi108/market-data-gateway/internal/storage"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,6 +46,11 @@ func TestFundingReconciledServiceCacheAndRestart(t *testing.T) {
 	if err != nil || len(got.FundingEvents) != 1 || got.CacheStatus != CacheRefreshed {
 		t.Fatalf("first %+v %v", got, err)
 	}
+	var metrics strings.Builder
+	svc.recorder().Snapshot().WritePrometheus(&metrics)
+	if !strings.Contains(metrics.String(), `endpoint="get_funding"`) {
+		t.Fatalf("missing funding upstream metric: %s", metrics.String())
+	}
 	closeService(t, store, scheduler)
 	svc, store, scheduler = open()
 	defer closeService(t, store, scheduler)
@@ -75,8 +81,9 @@ func TestFundingUnavailableProviderNeverUsesPartialSnapshot(t *testing.T) {
 	// An unavailable provider must not turn a partly covered window into a stale success.
 	svc.provider = &fakeProvider{response: func(model.CandleRequest) ([]model.Candle, error) { panic("unexpected candle request") }}
 	_, err = svc.Get(context.Background(), "test", ratelimit.PriorityLiveRefresh, model.CandleRequest{Series: key, FromUTCMS: 100, ToUTCMS: 200, Limit: 10})
-	if err == nil {
-		t.Fatal("partial funding served after upstream failure")
+	var typed *apperror.Error
+	if !errors.As(err, &typed) || typed.Code != apperror.CodeCoverageUnknown || typed.Retryable {
+		t.Fatalf("expected non-retryable coverage unknown, got %v", err)
 	}
 }
 

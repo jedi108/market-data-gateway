@@ -22,8 +22,7 @@ for `venue=binance`, `symbol=BTC/USDT:USDT`, and `timeframe=8h`. The normal wind
 limit and `include_incomplete=false` parameters remain required. The response
 has typed `funding_events` and diagnostic labels in `series`.
 
-No funding archive is currently pinned: independent digest evidence is unavailable,
-so funding requests fail closed. The gateway requires
+Only the Binance BTCUSDT January 2024 funding archive is pinned; other months fail closed. The gateway requires
 both the pinned archive and matching API observations; missing pins, conflicting
 sources, an empty window, or an over-limit result fail closed. Reconciliation is
 diagnostic agreement, **not proof of completeness**. The 8h series identity
@@ -238,7 +237,7 @@ Futures identity contract:
   order; unlabeled series retain the five-field identity. Funding/mark
   diagnostic identities are restricted to Binance futures with native USDT
   symbols. `reconciled` does not prove completeness; `unknown` is refused.
-  Production funding/mark GET and reconciliation are not yet implemented.
+  Production funding GET is limited to independently pinned archives reconciled against the API; mark GET remains unavailable.
   The storage schema version stays owned by the migration chain; the response
   envelope carries its own `schema_version`.
 - A logical alias (for example a rolling `GOLD` ticker) is a **resolution

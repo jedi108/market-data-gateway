@@ -57,8 +57,9 @@ func TestGETReconciledFundingThroughScheduledCache(t *testing.T) {
 	for _, suffix := range []string{"&completeness=unknown&diagnostic_only=true", "&completeness=reconciled&diagnostic_only=false", ""} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, base+suffix, nil))
-		if w.Code == http.StatusOK {
-			t.Fatalf("invalid diagnostic accepted: %s", suffix)
+		var body errorEnvelope
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusServiceUnavailable || body.Error != "COVERAGE_UNKNOWN" || body.Retryable {
+			t.Fatalf("invalid diagnostic %s: status=%d body=%s err=%v", suffix, w.Code, w.Body.String(), err)
 		}
 	}
 	if source.calls.Load() != 0 {
