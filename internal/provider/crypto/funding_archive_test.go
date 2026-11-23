@@ -39,7 +39,7 @@ func TestParseFundingArchive(t *testing.T) {
 		t.Fatalf("unexpected events: %+v", events)
 	}
 	for _, tt := range []struct{ name, member, body string }{
-		{"schema", member, "wrong,header,columns\n"}, {"duplicate", member, header + "1704067200000,8,0.1\n1704067200000,4,0.2\n"},
+		{"schema", member, "wrong,header,columns\n"}, {"header only", member, header}, {"duplicate", member, header + "1704067200000,8,0.1\n1704067200000,4,0.2\n"},
 		{"order", member, header + "1704096000000,8,0.1\n1704067200000,4,0.2\n"}, {"other month", member, header + "1706745600000,8,0.1\n"},
 		{"wrong symbol", "ETHUSDT-fundingRate-2024-01.csv", header}, {"invalid interval", member, header + "1704067200000,0,0.1\n"}, {"invalid rate", member, header + "1704067200000,8,nan\n"},
 	} {

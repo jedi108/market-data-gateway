@@ -85,5 +85,8 @@ func ParseFundingArchive(data []byte, checksum, pinnedSHA, symbol, month string)
 		events = append(events, model.FundingEvent{Ts: ts, Rate: row[2], IntervalH: interval, AvailableAt: ts, Availability: "historical_payment_assumption"})
 		previous = ts
 	}
+	if len(events) == 0 {
+		return fail("archive has no funding rows")
+	}
 	return events, nil
 }
