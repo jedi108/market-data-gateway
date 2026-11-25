@@ -202,8 +202,10 @@ func (r *recorder) handle(m *investapi.MarketDataResponse, recvTS time.Time) err
 // the JSONL. lag_ms is signed: negative means the server stamp is ahead of us.
 func (r *recorder) pingProbe(p *investapi.Ping, recvTS time.Time) error {
 	st := p.GetPingRequestTime()
+	src := "ping_request_time"
 	if st == nil {
 		st = p.GetTime()
+		src = "time"
 	}
 	if st == nil {
 		return nil
@@ -214,9 +216,10 @@ func (r *recorder) pingProbe(p *investapi.Ping, recvTS time.Time) error {
 	r.lastPing = recvTS
 	serverTS := st.AsTime()
 	rec := map[string]any{"type": "ping",
-		"recv_ts":   recvTS.UTC().Format(time.RFC3339Nano),
-		"server_ts": serverTS.UTC().Format(time.RFC3339Nano),
-		"lag_ms":    float64(recvTS.Sub(serverTS)) / float64(time.Millisecond)}
+		"recv_ts":       recvTS.UTC().Format(time.RFC3339Nano),
+		"server_ts":     serverTS.UTC().Format(time.RFC3339Nano),
+		"server_ts_src": src, // which server stamp lag_ms is measured against (#1066 review D7)
+		"lag_ms":        float64(recvTS.Sub(serverTS)) / float64(time.Millisecond)}
 	for _, in := range r.instr {
 		if err := r.write(in.ticker, rec); err != nil {
 			return err

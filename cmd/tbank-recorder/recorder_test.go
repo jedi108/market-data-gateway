@@ -221,7 +221,7 @@ func TestPingProbe(t *testing.T) {
 		if len(m) != 1 {
 			t.Fatalf("%s files: %v", ticker, m)
 		}
-		var recvTSs, serverTSs []string
+		var recvTSs, serverTSs, srcs []string
 		var lags []float64
 		for _, line := range strings.Split(strings.TrimSpace(readGz(t, m[0])), "\n") {
 			var rec map[string]any
@@ -231,16 +231,18 @@ func TestPingProbe(t *testing.T) {
 			if rec["type"] == "ping" {
 				recvTSs = append(recvTSs, rec["recv_ts"].(string))
 				serverTSs = append(serverTSs, rec["server_ts"].(string))
+				srcs = append(srcs, rec["server_ts_src"].(string))
 				lags = append(lags, rec["lag_ms"].(float64))
 			}
 		}
 		if len(lags) != 3 {
 			t.Fatalf("%s: ping records = %d, want 3 (sampled ~10 min):\n%s", ticker, len(lags), readGz(t, m[0]))
 		}
+		wantSrc := []string{"ping_request_time", "ping_request_time", "time"}
 		for i := range wantLag {
-			if lags[i] != wantLag[i] || recvTSs[i] != wantRecv[i] || serverTSs[i] != wantServer[i] {
-				t.Fatalf("%s ping[%d] = recv %s server %s lag %v, want recv %s server %s lag %v",
-					ticker, i, recvTSs[i], serverTSs[i], lags[i], wantRecv[i], wantServer[i], wantLag[i])
+			if lags[i] != wantLag[i] || recvTSs[i] != wantRecv[i] || serverTSs[i] != wantServer[i] || srcs[i] != wantSrc[i] {
+				t.Fatalf("%s ping[%d] = recv %s server %s src %s lag %v, want recv %s server %s src %s lag %v",
+					ticker, i, recvTSs[i], serverTSs[i], srcs[i], lags[i], wantRecv[i], wantServer[i], wantSrc[i], wantLag[i])
 			}
 		}
 	}
