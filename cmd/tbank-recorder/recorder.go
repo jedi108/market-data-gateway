@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	depth     = 10 // quant #612: L1–L5 фичи + BBO; 11–20 без гипотезы, вдвое меньше диска
-	pingMs    = 30000
+	depth  = 10 // quant #612: L1–L5 фичи + BBO; 11–20 без гипотезы, вдвое меньше диска
+	pingMs = 30000
 	// stallWait trips on a dead transport (no Recv at all, incl. ping echoes); subscription
 	// silence while the transport lives is caught by the day1 gap/stall gate, not here (#1066).
 	stallWait = 60 * time.Second // 2 missed 30 s pings = silence (#1066)
