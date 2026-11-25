@@ -321,7 +321,11 @@ func TestPingRequestProbe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
 	go func() { done <- r.Run(ctx, investapi.NewMarketDataStreamServiceClient(conn)) }()
+	deadline := time.Now().Add(2 * time.Second)
 	for f.pings.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("client sent %d ping requests, want >=2 (ticker regression?)", f.pings.Load())
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	time.Sleep(100 * time.Millisecond)

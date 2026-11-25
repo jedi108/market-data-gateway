@@ -23,6 +23,8 @@ import (
 const (
 	depth     = 10 // quant #612: L1–L5 фичи + BBO; 11–20 без гипотезы, вдвое меньше диска
 	pingMs    = 30000
+	// stallWait trips on a dead transport (no Recv at all, incl. ping echoes); subscription
+	// silence while the transport lives is caught by the day1 gap/stall gate, not here (#1066).
 	stallWait = 60 * time.Second // 2 missed 30 s pings = silence (#1066)
 	maxBack   = time.Minute
 	stable    = time.Minute // a session this long resets the backoff, so a flapping stream escalates to ~1 reconnect/min
@@ -273,6 +275,7 @@ func (r *recorder) session(ctx context.Context, c investapi.MarketDataStreamServ
 			case <-t.C:
 				if err := st.Send(&investapi.MarketDataRequest{Payload: &investapi.MarketDataRequest_Ping{
 					Ping: &investapi.PingRequest{Time: timestamppb.New(r.now())}}}); err != nil {
+					log.Printf("ping probe: send: %v", err) // stream not necessarily dead; Recv loop decides
 					return
 				}
 			}
