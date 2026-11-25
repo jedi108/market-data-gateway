@@ -17,6 +17,7 @@ import (
 
 	"github.com/jedi108/market-data-gateway/internal/provider/tbank/gen/investapi"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -26,6 +27,11 @@ const (
 	maxBack   = time.Minute
 	stable    = time.Minute // a session this long resets the backoff, so a flapping stream escalates to ~1 reconnect/min
 )
+
+// pingEvery is the client PingRequest cadence (#1066): the sandbox sends no usable
+// server-initiated ping stamps while trading, so the probe sends PingRequest{time}
+// and measures Recv − the echoed ping_request_time (round-trip path probe).
+var pingEvery = 30 * time.Second
 
 var msk = time.FixedZone("MSK", 3*3600)
 
@@ -197,9 +203,11 @@ func (r *recorder) handle(m *investapi.MarketDataResponse, recvTS time.Time) err
 	return nil
 }
 
-// pingProbe samples the server→recorder path lag into every instrument file
-// once per ~10 min (#1066): pings arrive every 30 s, logging each would bloat
-// the JSONL. lag_ms is signed: negative means the server stamp is ahead of us.
+// pingProbe samples the path lag into every instrument file once per ~10 min
+// (#1066): pings arrive every 30 s, logging each would bloat the JSONL.
+// server_ts_src=ping_request_time: lag_ms is the round-trip of our own
+// PingRequest stamp echoed by the server; server_ts_src=time: one-way lag
+// against a server-initiated stamp (signed: negative = server ahead of us).
 func (r *recorder) pingProbe(p *investapi.Ping, recvTS time.Time) error {
 	st := p.GetPingRequestTime()
 	src := "ping_request_time"
@@ -254,6 +262,22 @@ func (r *recorder) session(ctx context.Context, c investapi.MarketDataStreamServ
 			return false, err
 		}
 	}
+	// Client-side ping probe (#1066): concurrent Send is safe alongside Recv.
+	go func() {
+		t := time.NewTicker(pingEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := st.Send(&investapi.MarketDataRequest{Payload: &investapi.MarketDataRequest_Ping{
+					Ping: &investapi.PingRequest{Time: timestamppb.New(r.now())}}}); err != nil {
+					return
+				}
+			}
+		}
+	}()
 	watchdog := time.AfterFunc(stallWait, cancel)
 	defer watchdog.Stop()
 	for {

@@ -276,3 +276,68 @@ func TestHourRotation(t *testing.T) {
 		t.Fatalf("hour 11: %s", out)
 	}
 }
+
+// fakePing echoes client PingRequest stamps back as Ping.ping_request_time (#1066).
+type fakePing struct {
+	investapi.UnimplementedMarketDataStreamServiceServer
+	pings atomic.Int32
+}
+
+func (f *fakePing) MarketDataStream(s grpc.BidiStreamingServer[investapi.MarketDataRequest, investapi.MarketDataResponse]) error {
+	for {
+		req, err := s.Recv()
+		if err != nil {
+			return err
+		}
+		if p := req.GetPing(); p != nil {
+			f.pings.Add(1)
+			if err := s.Send(&investapi.MarketDataResponse{Payload: &investapi.MarketDataResponse_Ping{
+				Ping: &investapi.Ping{PingRequestTime: p.GetTime(), StreamId: "s"}}}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func TestPingRequestProbe(t *testing.T) {
+	old := pingEvery
+	pingEvery = 10 * time.Millisecond
+	defer func() { pingEvery = old }()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	f := &fakePing{}
+	investapi.RegisterMarketDataStreamServiceServer(srv, f)
+	go srv.Serve(lis)
+	defer srv.Stop()
+	conn, err := grpc.NewClient("passthrough:///x", grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	dir := t.TempDir()
+	r := newRecorder(dir, "sha", []instrument{{"SiZ6", "uid1"}})
+	r.minBack = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- r.Run(ctx, investapi.NewMarketDataStreamServiceClient(conn)) }()
+	for f.pings.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := filepath.Glob(filepath.Join(dir, "tbank/SiZ6/*/*.jsonl.gz"))
+	if len(m) != 1 {
+		t.Fatalf("files: %v", m)
+	}
+	out := readGz(t, m[0])
+	if !strings.Contains(out, `"type":"ping"`) || !strings.Contains(out, `"server_ts_src":"ping_request_time"`) {
+		t.Fatalf("no echoed ping probe record:\n%s", out)
+	}
+}
