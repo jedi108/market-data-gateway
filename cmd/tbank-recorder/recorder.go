@@ -22,7 +22,7 @@ import (
 const (
 	depth     = 10 // quant #612: L1–L5 фичи + BBO; 11–20 без гипотезы, вдвое меньше диска
 	pingMs    = 30000
-	stallWait = 2 * time.Minute
+	stallWait = 60 * time.Second // 2 missed 30 s pings = silence (#1066)
 	maxBack   = time.Minute
 	stable    = time.Minute // a session this long resets the backoff, so a flapping stream escalates to ~1 reconnect/min
 )
@@ -41,20 +41,24 @@ type hourFile struct {
 type diskErr struct{ error }
 
 type recorder struct {
-	dir, sha string
-	instr    []instrument
-	now      func() time.Time
-	minBack  time.Duration
-	files    map[string]*hourFile
-	seq      uint64
-	flushed  time.Time
-	gapFrom  time.Time // start of the unrecorded interval, zero = unknown
-	gapWhy   string
+	dir, sha       string
+	instr          []instrument
+	now            func() time.Time
+	minBack        time.Duration
+	files          map[string]*hourFile
+	seq            uint64
+	flushed        time.Time
+	gapFrom        time.Time // start of the unrecorded interval, zero = unknown
+	gapWhy         string
+	gapSem         string        // gapFrom provenance: "startup" (file mtime/now) or "last_recv" (#1066)
+	lastRecv       time.Time     // local clock right after the last successful Recv, before Marshal (#1066)
+	lastPing       time.Time     // recv_ts of the last sampled ping record (#1066)
+	reconnectDelay time.Duration // actual back+jitter slept before the current session attempt
 }
 
 func newRecorder(dir, sha string, instr []instrument) *recorder {
 	r := &recorder{dir: dir, sha: sha, instr: instr, now: time.Now, minBack: 2 * time.Second,
-		files: map[string]*hourFile{}, gapWhy: "start"}
+		files: map[string]*hourFile{}, gapWhy: "start", gapSem: "startup"}
 	// shortcut: start gap begins at the oldest "latest file mtime" across tickers.
 	for _, in := range instr {
 		m, _ := filepath.Glob(filepath.Join(dir, "tbank", in.ticker, "*", "*.jsonl.gz"))
@@ -119,7 +123,8 @@ func (r *recorder) open(ticker, hour string, now time.Time) (*hourFile, error) {
 		}
 	}
 	hdr, _ := json.Marshal(map[string]any{"type": "header", "binary_sha": r.sha, "uid": uid,
-		"ticker": ticker, "depth": depth, "started": now.UTC().Format(time.RFC3339Nano)})
+		"ticker": ticker, "depth": depth, "started": now.UTC().Format(time.RFC3339Nano),
+		"recv_ts_semantics": "local clock immediately after gRPC Recv, before protojson.Marshal (#1066)"})
 	if _, err = h.gz.Write(append(hdr, '\n')); err != nil {
 		return nil, err
 	}
@@ -146,7 +151,8 @@ func (r *recorder) Close() error {
 }
 
 func (r *recorder) writeGap(reason string) error {
-	g := map[string]any{"type": "gap", "to": r.now().UTC().Format(time.RFC3339Nano), "reason": reason}
+	g := map[string]any{"type": "gap", "to": r.now().UTC().Format(time.RFC3339Nano), "reason": reason,
+		"from_semantics": r.gapSem, "reconnect_delay": r.reconnectDelay.Milliseconds()}
 	if !r.gapFrom.IsZero() {
 		g["from"] = r.gapFrom.UTC().Format(time.RFC3339Nano)
 	}
@@ -156,10 +162,14 @@ func (r *recorder) writeGap(reason string) error {
 		}
 	}
 	r.gapFrom = time.Time{}
+	r.gapSem = ""
 	return nil
 }
 
-func (r *recorder) handle(m *investapi.MarketDataResponse) error {
+// handle records one stream message. recvTS is the local clock captured right
+// after st.Recv returned, before protojson.Marshal: a local CPU stall in this
+// goroutine must not be indistinguishable from delivery latency (#1066).
+func (r *recorder) handle(m *investapi.MarketDataResponse, recvTS time.Time) error {
 	var kind, uid string
 	switch p := m.Payload.(type) {
 	case *investapi.MarketDataResponse_Trade:
@@ -167,7 +177,7 @@ func (r *recorder) handle(m *investapi.MarketDataResponse) error {
 	case *investapi.MarketDataResponse_Orderbook:
 		kind, uid = "orderbook", p.Orderbook.InstrumentUid
 	case *investapi.MarketDataResponse_Ping:
-		return nil
+		return r.pingProbe(p.Ping, recvTS)
 	default:
 		log.Printf("stream: %s", protojson.Format(m)) // subscription acks: per-instrument status
 		return nil
@@ -180,10 +190,38 @@ func (r *recorder) handle(m *investapi.MarketDataResponse) error {
 			}
 			r.seq++
 			return r.write(in.ticker, map[string]any{"type": kind,
-				"recv_ts": r.now().UTC().Format(time.RFC3339Nano), "seq": r.seq, "msg": json.RawMessage(raw)})
+				"recv_ts": recvTS.UTC().Format(time.RFC3339Nano), "seq": r.seq, "msg": json.RawMessage(raw)})
 		}
 	}
 	log.Printf("unknown instrument_uid %s", uid)
+	return nil
+}
+
+// pingProbe samples the server→recorder path lag into every instrument file
+// once per ~10 min (#1066): pings arrive every 30 s, logging each would bloat
+// the JSONL. lag_ms is signed: negative means the server stamp is ahead of us.
+func (r *recorder) pingProbe(p *investapi.Ping, recvTS time.Time) error {
+	st := p.GetPingRequestTime()
+	if st == nil {
+		st = p.GetTime()
+	}
+	if st == nil {
+		return nil
+	}
+	if !r.lastPing.IsZero() && recvTS.Sub(r.lastPing) < 10*time.Minute {
+		return nil
+	}
+	r.lastPing = recvTS
+	serverTS := st.AsTime()
+	rec := map[string]any{"type": "ping",
+		"recv_ts":   recvTS.UTC().Format(time.RFC3339Nano),
+		"server_ts": serverTS.UTC().Format(time.RFC3339Nano),
+		"lag_ms":    float64(recvTS.Sub(serverTS)) / float64(time.Millisecond)}
+	for _, in := range r.instr {
+		if err := r.write(in.ticker, rec); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -220,6 +258,10 @@ func (r *recorder) session(ctx context.Context, c investapi.MarketDataStreamServ
 		if err != nil {
 			return gotData, err
 		}
+		// recv_ts semantics (#1066): stamp immediately after Recv, before any
+		// Marshal work; lastRecv anchors the next gap at the last received message.
+		recvTS := r.now()
+		r.lastRecv = recvTS
 		watchdog.Reset(stallWait)
 		if !gotData {
 			gotData = true
@@ -227,7 +269,7 @@ func (r *recorder) session(ctx context.Context, c investapi.MarketDataStreamServ
 				return true, err
 			}
 		}
-		if err := r.handle(m); err != nil {
+		if err := r.handle(m, recvTS); err != nil {
 			return true, err
 		}
 	}
@@ -239,6 +281,7 @@ func (r *recorder) Run(ctx context.Context, c investapi.MarketDataStreamServiceC
 	for {
 		if r.gapFrom.IsZero() {
 			r.gapFrom = r.now()
+			r.gapSem = "startup"
 		}
 		t0 := time.Now()
 		got, err := r.session(ctx, c)
@@ -252,15 +295,20 @@ func (r *recorder) Run(ctx context.Context, c investapi.MarketDataStreamServiceC
 		r.gapWhy = fmt.Sprint("stream: ", err)
 		log.Printf("%s; reconnect in %s", r.gapWhy, back)
 		if got {
-			r.gapFrom = r.now()
+			// The outage starts at the last received message, not at the error
+			// moment: watchdog silence otherwise shrinks the gap ~13× (#1066).
+			r.gapFrom = r.lastRecv
+			r.gapSem = "last_recv"
 			if time.Since(t0) > stable {
 				back = r.minBack
 			}
 		}
+		delay := back + rand.N(back/2+1) // jitter
+		r.reconnectDelay = delay
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(back + rand.N(back/2+1)): // jitter
+		case <-time.After(delay):
 		}
 		if back *= 2; back > maxBack {
 			back = maxBack
